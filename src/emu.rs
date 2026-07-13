@@ -66,6 +66,9 @@ pub fn supported_titles() -> String {
 
 pub struct Emu {
     pub handle: mgba::thread::Handle,
+    /// The comm applet is inside a link session (see
+    /// [`hooks::comm_session_active`]), sampled once per frame.
+    pub comm_active: Arc<AtomicBool>,
     /// Raw BGR555 out of mgba, 2 bytes/pixel.
     pub vbuf: Arc<Mutex<Vec<u8>>>,
     pub dirty: Arc<AtomicBool>,
@@ -97,12 +100,20 @@ pub fn start(
     let dirty = Arc::new(AtomicBool::new(false));
 
     let thread = mgba::thread::Thread::new(core);
+    let comm_active = Arc::new(AtomicBool::new(false));
     thread.set_frame_callback({
         let vbuf = vbuf.clone();
         let dirty = dirty.clone();
-        move |_core, video_buffer, _thread_handle| {
+        let comm_active = comm_active.clone();
+        move |mut core, video_buffer, _thread_handle| {
             vbuf.lock().unwrap().copy_from_slice(video_buffer);
             dirty.store(true, Ordering::Release);
+            let program = core.raw_read_8(hooks::COMM_PROGRAM, -1);
+            let substate = core.raw_read_8(hooks::COMM_SUBSTATE, -1);
+            comm_active.store(
+                hooks::comm_session_active(program, substate),
+                Ordering::Release,
+            );
             // Wake the UI's frame stream (permits coalesce, so a slow UI
             // frame-skips rather than queueing).
             frame_notify.notify_one();
@@ -114,6 +125,7 @@ pub fn start(
 
     Ok(Emu {
         handle,
+        comm_active,
         vbuf,
         dirty,
         _thread: thread,

@@ -120,6 +120,22 @@ pub static A89J_00: Offsets = Offsets {
     },
 };
 
+/// The comm applet's program byte and its substate, in the shared EWRAM
+/// layout (region-independent, like [`Ewram`]). Program 1 is the connect
+/// applet (substate 4 is the drvA loader, ≥ 50 its failure screens), 2 the
+/// battle, 3 the result screen, 5 the comm-error backout; 0 means no comm
+/// applet is running. Same addresses the selftest harness watches.
+pub const COMM_PROGRAM: u32 = 0x0200_b794;
+pub const COMM_SUBSTATE: u32 = 0x0200_b795;
+
+/// True while the game is inside a link session: a connect handshake
+/// underway (the mode-select menus before it don't count), the battle, or
+/// its result/error screens. The UI watches the falling edge to drop the
+/// connection when the match is over — leaving Transmit unplugs the cable.
+pub fn comm_session_active(program: u8, substate: u8) -> bool {
+    program >= 2 || (program == 1 && substate >= 4)
+}
+
 const STILL_EXCHANGING: u32 = 0xffff_ffff; // -1
 const COMM_ERROR: u32 = 0xffff_fffe; // -2
 

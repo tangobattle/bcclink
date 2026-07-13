@@ -7,11 +7,12 @@
 //! matchmaking server (see [`ring_bcc::hooks`] / [`ring_bcc::link`] /
 //! [`ring_bcc::net`]). There is no lobby and no autopilot. The UI is two
 //! screens: a setup screen (pick ROM + save, start the game) and the game
-//! screen, whose top bar holds the link code and connection status. Trade a
-//! link code with your opponent, Connect, and walk to **PET → Transmit**
-//! in-game when you want to battle. The connect screen waits until the
-//! opponent is standing in theirs, exactly like two consoles waiting on a
-//! real cable.
+//! screen — just the game, no chrome. Walk to **PET → Transmit** in-game
+//! when you want to battle: the moment the game starts connecting, a
+//! connect dialog pops up over it asking for a link code shared with your
+//! opponent. Cancelling it fails the game's connection attempt so it backs
+//! out on its own; when the match ends (or you leave Transmit), the
+//! connection closes — the cable unplugs itself.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -21,21 +22,26 @@ use std::sync::{Arc, Mutex};
 
 use ring_bcc::emu::{self, SCREEN_H, SCREEN_W};
 use ring_bcc::{audio, link, net};
-use iced::widget::{button, column, container, image, row, text, text_input};
+use iced::widget::{
+    button, center, column, container, image, mouse_area, opaque, row, stack, text, text_input,
+};
 use iced::{Element, Length, Subscription, Task};
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MATCHMAKING_ENDPOINT: &str = "wss://matchmaking.tango.n1gp.net";
 
-// Design tokens, matching tango's dark theme so the two apps feel related.
-const BG: iced::Color = iced::Color::from_rgb(0.055, 0.063, 0.067); // #0e1011
-const SURFACE: iced::Color = iced::Color::from_rgb(0.086, 0.098, 0.106); // #16191b
-const EDGE: iced::Color = iced::Color::from_rgb(0.149, 0.161, 0.173); // #26292c
-const TEXT: iced::Color = iced::Color::from_rgb(0.925, 0.933, 0.929); // #eceeed
-const ACCENT: iced::Color = iced::Color::from_rgb(0.298, 0.686, 0.314); // #4caf50
+// Design tokens from the logo: the ring's purple is the primary (buttons,
+// focus), the chip ring's chartreuse marks a live link, and the dark
+// neutrals carry a violet cast to match.
+const BG: iced::Color = iced::Color::from_rgb(0.063, 0.055, 0.078); // #100e14
+const SURFACE: iced::Color = iced::Color::from_rgb(0.094, 0.082, 0.129); // #181521
+const EDGE: iced::Color = iced::Color::from_rgb(0.173, 0.153, 0.224); // #2c2739
+const TEXT: iced::Color = iced::Color::from_rgb(0.933, 0.925, 0.949); // #eeecf2
+const PRIMARY: iced::Color = iced::Color::from_rgb(0.8, 0.6, 1.0); // #cc99ff
+const ACCENT: iced::Color = iced::Color::from_rgb(0.8, 1.0, 0.0); // #ccff00
 const WARNING: iced::Color = iced::Color::from_rgb(1.0, 0.710, 0.278); // #ffb547
 const DANGER: iced::Color = iced::Color::from_rgb(1.0, 0.322, 0.322); // #ff5252
-const WEAK: iced::Color = iced::Color::from_rgb(0.604, 0.627, 0.651); // #9aa0a6
+const WEAK: iced::Color = iced::Color::from_rgb(0.627, 0.6, 0.69); // #a099b0
 
 const TEXT_TITLE: f32 = 22.0;
 const TEXT_BODY: f32 = 13.0;
@@ -47,7 +53,7 @@ fn theme(_app: &App) -> iced::Theme {
         iced::theme::Palette {
             background: BG,
             text: TEXT,
-            primary: ACCENT,
+            primary: PRIMARY,
             success: ACCENT,
             warning: WARNING,
             danger: DANGER,
@@ -225,11 +231,11 @@ enum Message {
     PickSave,
     SavePicked(Option<PathBuf>),
     Play,
-    Stop,
     LinkCodeChanged(String),
     EndpointChanged(String),
     EndpointReset,
     ToggleAdvanced,
+    CloseConnectDialog,
     Connect,
     Disconnect,
     KeyDown(u32),
@@ -260,6 +266,20 @@ struct App {
     rgba: Vec<u8>,
     error: Option<String>,
     advanced: bool,
+    /// The logo, shown on the setup card. `None` (decode failure) just
+    /// hides it, same contract as the window icon.
+    logo: Option<image::Handle>,
+    /// The connect dialog is up — auto-popped by the game opening a
+    /// handshake (PET → Transmit) with no link, or by the bar's Connect
+    /// button.
+    connect_dialog: bool,
+    /// Last handshake generation the auto-pop reacted to; a cancelled
+    /// dialog stays down until the game opens a *new* handshake.
+    seen_gen: u16,
+    /// The game was inside a link session last frame; the falling edge
+    /// (match over, or the player backed out of Transmit) closes the
+    /// connection and the dialog.
+    comm_was_active: bool,
 }
 
 impl App {
@@ -291,6 +311,10 @@ impl App {
             rgba: vec![0u8; (SCREEN_W * SCREEN_H * 4) as usize],
             error: None,
             advanced: false,
+            logo: load_logo(),
+            connect_dialog: false,
+            seen_gen: 0,
+            comm_was_active: false,
         };
         (app, Task::none())
     }
@@ -349,8 +373,12 @@ impl App {
             Task::none()
         } else {
             self.cfg.save();
-            // Starting the game flows straight into typing the link code.
-            iced::widget::operation::focus("link-code")
+            // The link (and its handshake generation) outlives sessions;
+            // sync so a previous session's last Transmit doesn't pop the
+            // connect dialog the moment this one starts.
+            self.seen_gen = self.link.handshake_gen();
+            self.comm_was_active = false;
+            Task::none()
         }
     }
 
@@ -360,6 +388,7 @@ impl App {
     /// written through).
     fn stop(&mut self) {
         self.disconnect();
+        self.connect_dialog = false;
         self._audio = None;
         self.emu = None;
         self.screen = None;
@@ -400,13 +429,49 @@ impl App {
     }
 
     /// True while a connect task is running and hasn't failed — the state
-    /// where the top bar shows Disconnect instead of Connect.
+    /// where the dialog shows Disconnect instead of Connect.
     fn connecting(&self) -> bool {
         self.cancel.is_some()
             && !matches!(
                 *self.status.lock().unwrap(),
                 net::Status::Idle | net::Status::Lost(_)
             )
+    }
+
+    /// Per-frame link bookkeeping. The connect dialog pops the moment the
+    /// game opens a fresh handshake (the player committed to a Transmit
+    /// mode and the game entered its connecting screen) with no link up,
+    /// and drops once the link comes up. When the game *leaves* the link
+    /// session (match over, comm error dismissed, or the player backed out
+    /// of Transmit), the connection closes — the cable unplugs itself —
+    /// and the dialog goes with it.
+    fn dialog_tick(&mut self) -> Task<Message> {
+        let active = self
+            .emu
+            .as_ref()
+            .is_some_and(|emu| emu.comm_active.load(Ordering::Acquire));
+        if self.comm_was_active && !active {
+            self.disconnect();
+            self.connect_dialog = false;
+        }
+        self.comm_was_active = active;
+
+        let connected = matches!(
+            *self.status.lock().unwrap(),
+            net::Status::Connected { .. }
+        );
+        if self.connect_dialog && connected {
+            self.connect_dialog = false;
+        }
+        let gen = self.link.handshake_gen();
+        if gen != self.seen_gen {
+            self.seen_gen = gen;
+            if !connected && !self.connect_dialog {
+                self.connect_dialog = true;
+                return iced::widget::operation::focus("link-code");
+            }
+        }
+        Task::none()
     }
 
     fn on_frame(&mut self) {
@@ -447,7 +512,7 @@ impl App {
         match message {
             Message::Frame => {
                 self.on_frame();
-                Task::none()
+                self.dialog_tick()
             }
             Message::PickRom => Task::perform(
                 async {
@@ -511,10 +576,6 @@ impl App {
             }
             Message::RomPicked(None) | Message::SavePicked(None) => Task::none(),
             Message::Play => self.play(),
-            Message::Stop => {
-                self.stop();
-                Task::none()
-            }
             Message::LinkCodeChanged(code) => {
                 // Same restrictions as tango: [a-z0-9-] only, capped at 100.
                 // Lowercased as typed — matchmaking is case-sensitive, so
@@ -538,6 +599,22 @@ impl App {
             }
             Message::ToggleAdvanced => {
                 self.advanced = !self.advanced;
+                Task::none()
+            }
+            Message::CloseConnectDialog => {
+                self.connect_dialog = false;
+                // Closed without a link up: the game is sitting at its
+                // connecting screen with no way forward. Abort any dial in
+                // progress and flag a comm error so the polls return -2 and
+                // the game backs out through its own comm-error path. The
+                // next handshake starts clean (open_handshake clears it).
+                if !matches!(
+                    *self.status.lock().unwrap(),
+                    net::Status::Connected { .. }
+                ) {
+                    self.disconnect();
+                    self.link.set_error();
+                }
                 Task::none()
             }
             Message::Connect => {
@@ -618,14 +695,16 @@ impl App {
 
         let can_play = self.cfg.rom_path.is_some() && self.cfg.save_path.is_some();
 
-        let mut card = column![
-            text("Ring").size(TEXT_TITLE),
+        let mut card = column![].spacing(4).align_x(iced::Alignment::Center);
+        if let Some(logo) = &self.logo {
+            card = card.push(image(logo).width(64).height(64));
+        }
+        card = card.push(text("Ring").size(TEXT_TITLE));
+        card = card.push(
             text("link play for Battle Chip Challenge / Battle Chip GP")
                 .size(TEXT_CAPTION)
                 .color(WEAK),
-        ]
-        .spacing(4)
-        .align_x(iced::Alignment::Center);
+        );
 
         card = card.push(iced::widget::space().height(12));
         card = card.push(
@@ -707,78 +786,13 @@ impl App {
         .into()
     }
 
-    /// The game screen: top bar (link code, connection status, stop) over
-    /// the integer-scaled screen on black.
+    /// The game screen: just the integer-scaled screen on black — no
+    /// chrome. Entering PET → Transmit in-game with no link up pops the
+    /// connect dialog over it; leaving the session takes the connection
+    /// (and the dialog) down again.
     fn game_view(&self) -> Element<'_, Message> {
         let status = self.status.lock().unwrap().clone();
         let connecting = self.connecting();
-
-        let mut bar = row![].spacing(10).align_y(iced::Alignment::Center);
-        bar = bar.push(text("link code").size(TEXT_CAPTION).color(WEAK));
-        {
-            let mut code_edit = text_input("make one up, share it", &self.cfg.link_code)
-                .id("link-code")
-                .size(TEXT_BODY)
-                .padding([5, 8])
-                .on_input(Message::LinkCodeChanged)
-                .width(150);
-            if !connecting {
-                code_edit = code_edit.on_submit(Message::Connect);
-            }
-            bar = bar.push(code_edit);
-        }
-        if connecting {
-            bar = bar.push(
-                button(text("Disconnect").size(TEXT_BODY))
-                    .style(button::secondary)
-                    .padding([5, 12])
-                    .on_press(Message::Disconnect),
-            );
-        } else {
-            let can_connect = !self.cfg.link_code.trim().is_empty();
-            bar = bar.push(
-                button(text("Connect").size(TEXT_BODY))
-                    .padding([5, 12])
-                    .on_press_maybe(can_connect.then_some(Message::Connect)),
-            );
-        }
-        let (dot, line, color) = match status {
-            net::Status::Idle => (
-                "○",
-                "enter a shared code, then Connect".to_owned(),
-                WEAK,
-            ),
-            net::Status::Signaling => ("◌", "contacting server…".to_owned(), WARNING),
-            net::Status::WaitingForPeer => ("◌", "waiting for opponent…".to_owned(), WARNING),
-            net::Status::Connected {
-                side,
-                cross_version,
-            } => (
-                "●",
-                format!(
-                    "linked{} — you are P{} — PET → Transmit in-game",
-                    if cross_version { " US↔JP" } else { "" },
-                    side + 1
-                ),
-                ACCENT,
-            ),
-            net::Status::Lost(reason) => ("●", reason, DANGER),
-        };
-        bar = bar.push(
-            row![
-                text(dot).size(TEXT_CAPTION).color(color),
-                text(line).size(TEXT_CAPTION).color(color),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-        );
-        bar = bar.push(iced::widget::space().width(Length::Fill));
-        bar = bar.push(
-            button(text("Stop").size(TEXT_BODY))
-                .style(button::danger)
-                .padding([5, 12])
-                .on_press(Message::Stop),
-        );
 
         let screen: Element<'_, Message> = if let Some(handle) = &self.screen {
             let handle = handle.clone();
@@ -801,23 +815,137 @@ impl App {
             iced::widget::space().into()
         };
 
-        column![
-            container(bar).padding([8, 12]).width(Length::Fill).style(
-                |_: &iced::Theme| container::Style {
-                    background: Some(SURFACE.into()),
-                    ..Default::default()
-                }
-            ),
-            container(screen)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(iced::Color::BLACK.into()),
-                    ..Default::default()
-                }),
-        ]
+        let base: Element<'_, Message> = container(screen)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(iced::Color::BLACK.into()),
+                ..Default::default()
+            })
+            .into();
+
+        if self.connect_dialog {
+            modal(
+                base,
+                self.connect_dialog_view(&status, connecting),
+                Message::CloseConnectDialog,
+            )
+        } else {
+            base
+        }
+    }
+
+    /// The connect dialog: link code, live status, Connect/Cancel. The game
+    /// keeps running (dimmed) behind it, sitting in its own connect screen.
+    fn connect_dialog_view(
+        &self,
+        status: &net::Status,
+        connecting: bool,
+    ) -> Element<'_, Message> {
+        let mut code_edit = text_input("make one up, share it", &self.cfg.link_code)
+            .id("link-code")
+            .size(TEXT_BODY)
+            .padding([5, 8])
+            .on_input(Message::LinkCodeChanged)
+            .width(Length::Fill);
+        if !connecting {
+            code_edit = code_edit.on_submit(Message::Connect);
+        }
+
+        let action: Element<'_, Message> = if connecting {
+            button(text("Disconnect").size(TEXT_BODY))
+                .style(button::secondary)
+                .padding([5, 12])
+                .on_press(Message::Disconnect)
+                .into()
+        } else {
+            let can_connect = !self.cfg.link_code.trim().is_empty();
+            button(text("Connect").size(TEXT_BODY))
+                .padding([5, 12])
+                .on_press_maybe(can_connect.then_some(Message::Connect))
+                .into()
+        };
+
+        let (dot, line, color) = status_line(status);
+        container(
+            column![
+                text("link code").size(TEXT_TITLE),
+                text("agree on a code with your opponent — the same code links you up")
+                    .size(TEXT_CAPTION)
+                    .color(WEAK),
+                code_edit,
+                row![
+                    text(dot).size(TEXT_CAPTION).color(color),
+                    text(line).size(TEXT_CAPTION).color(color),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+                row![
+                    iced::widget::space().width(Length::Fill),
+                    button(text("Cancel").size(TEXT_BODY))
+                        .style(button::secondary)
+                        .padding([5, 12])
+                        .on_press(Message::CloseConnectDialog),
+                    action,
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(10),
+        )
+        .width(340)
+        .padding(20)
+        .style(surface)
         .into()
     }
+}
+
+/// Connection status → (dot, line, color) for the top bar and the connect
+/// dialog.
+fn status_line(status: &net::Status) -> (&'static str, String, iced::Color) {
+    match status {
+        net::Status::Idle => ("○", "not linked".to_owned(), WEAK),
+        net::Status::Signaling => ("◌", "contacting server…".to_owned(), WARNING),
+        net::Status::WaitingForPeer => ("◌", "waiting for opponent…".to_owned(), WARNING),
+        net::Status::Connected { side, cross_version } => (
+            "●",
+            format!(
+                "linked{} — you are P{}",
+                if *cross_version { " US↔JP" } else { "" },
+                side + 1
+            ),
+            ACCENT,
+        ),
+        net::Status::Lost(reason) => ("●", reason.clone(), DANGER),
+    }
+}
+
+/// Overlay `dialog` on `base`, dimming and click-blocking everything under
+/// it; a click on the dim backdrop sends `on_dismiss`.
+fn modal<'a>(
+    base: Element<'a, Message>,
+    dialog: Element<'a, Message>,
+    on_dismiss: Message,
+) -> Element<'a, Message> {
+    stack![
+        base,
+        opaque(
+            mouse_area(
+                center(opaque(dialog)).style(|_| container::Style {
+                    background: Some(
+                        iced::Color {
+                            a: 0.6,
+                            ..iced::Color::BLACK
+                        }
+                        .into()
+                    ),
+                    ..Default::default()
+                })
+            )
+            .on_press(on_dismiss)
+        )
+    ]
+    .into()
 }
 
 /// Stable subscription identity for the frame stream; the `notify` payload
@@ -862,6 +990,16 @@ fn key_message(
     }
 }
 
+/// Decode the embedded `assets/icon.png` into an image handle for the
+/// setup card's logo. Same asset as the window icon.
+fn load_logo() -> Option<image::Handle> {
+    let img = ::image::load_from_memory(include_bytes!("../assets/icon.png"))
+        .ok()?
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(image::Handle::from_rgba(w, h, img.into_raw()))
+}
+
 /// Decode the embedded `assets/icon.png` into an iced `window::Icon`.
 /// Returns `None` on any failure — a corrupt asset just leaves the OS
 /// default icon, no need to escalate. (Windows also gets the exe's embedded
@@ -890,10 +1028,9 @@ fn main() -> anyhow::Result<()> {
         .theme(theme)
         .subscription(App::subscription)
         .window(iced::window::Settings {
-            size: iced::Size::new(
-                SCREEN_W as f32 * 3.0 + 16.0,
-                SCREEN_H as f32 * 3.0 + 110.0,
-            ),
+            // Exactly 3× the GBA screen: with no chrome around the game,
+            // the default window is a clean integer scale.
+            size: iced::Size::new(SCREEN_W as f32 * 3.0, SCREEN_H as f32 * 3.0),
             // OS-level window icon (title bar + taskbar).
             icon: load_window_icon(),
             // Close goes through Message::CloseRequested so the config gets

@@ -17,11 +17,17 @@ cable. The connect screen waits until your opponent is standing in theirs.
 
 Run `ring`, pick your ROM and save on the setup screen (the save is
 created if missing and written through as you save in-game), and press
-**Start game**. To battle, agree on a link code with your opponent, both
-type it into the bar above the game, and press **Connect** (or just hit
-Enter) — the matchmaking server pairs you and NAT traversal is handled
-(STUN/TURN), so no port forwarding. Then both of you go to PET → Transmit
-in-game whenever you're ready. **Stop** returns to the setup screen.
+**Start game**. To battle, just go to PET → Transmit in-game like you
+would with a real cable — the moment the game starts connecting, a dialog
+pops up over it asking for a link code. Agree on one with your opponent,
+type it in, and press **Connect** (or just hit Enter) — the matchmaking
+server pairs you and NAT traversal is handled (STUN/TURN), so no port
+forwarding. Cancelling the dialog fails the connection attempt, so the
+game backs out through its own comm-error screen. When the match ends (or
+you otherwise leave Transmit) the connection closes by itself, like
+unplugging the cable; the dialog returns next time you transmit. Closing
+the window quits (there is no other chrome); paths and settings are saved
+on the way out.
 
 The WebRTC offerer is P1 (parent/left); the answerer is P2. Link codes are
 namespaced (`ring:<code>`) so they can never collide with Tango lobby
@@ -32,8 +38,8 @@ link only relays bytes, it can't reconcile diverged battle data). US↔JP
 crossplay works, like it would
 over a real cable — the JP comm library and battle engine are the US code
 shifted, and cross-version battles (both parent directions, plus the guest
-exchange) proved frame-exact in the `cross`/`crossr` selftests — the status
-bar flags a cross-version link. Per Prof9, EWRAM is identical across
+exchange) proved frame-exact in the `cross`/`crossr` selftests — a
+cross-version link is noted in the log. Per Prof9, EWRAM is identical across
 regions, so an EU port only needs a new set of ROM addresses (`hooks.rs`).
 
 Paths, the link code, and the matchmaking endpoint (under **Advanced**)

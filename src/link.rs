@@ -212,6 +212,14 @@ impl Link {
         self.inner.lock().unwrap().side
     }
 
+    /// The current handshake generation: bumps every time the game opens a
+    /// fresh connect handshake (the player entered PET → Transmit). 0 =
+    /// never entered. The UI watches this to pop its connect dialog at the
+    /// moment the game is actually waiting on a link.
+    pub fn handshake_gen(&self) -> u16 {
+        self.inner.lock().unwrap().gen
+    }
+
     pub fn is_connected(&self) -> bool {
         self.inner.lock().unwrap().connected
     }
@@ -226,6 +234,11 @@ impl Link {
     /// handshake, and stage the mode byte for exchange.
     pub fn open_handshake(&self, mode: u8) {
         let mut inner = self.inner.lock().unwrap();
+        // A fresh session starts clean: `set_error` fires whenever a connect
+        // task ends — deliberate disconnects included — and a stale flag
+        // would `-2` this session before the player even sees the connect
+        // dialog. A transport that dies *during* the session re-flags.
+        inner.error = false;
         let next = (inner.gen + 1).max(inner.peer_gen);
         inner.enter_gen(next, true);
         inner.my_blocks[BlockKind::Mode as usize] = Some(vec![mode]);
