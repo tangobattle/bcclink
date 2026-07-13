@@ -1,4 +1,5 @@
-//! bcclink — standalone netplay for Mega Man Battle Chip Challenge (US).
+//! bcclink — standalone netplay for Mega Man Battle Chip Challenge (US) and
+//! its JP original, Rockman EXE Battle Chip GP.
 //!
 //! An egui window over an mgba core, with SDL3 for audio + gamepads (the
 //! same split Tango uses) and exactly one trick: the game's link-cable comm
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use bcclink::emu::{self, BCC_US_CRC32, SCREEN_H, SCREEN_W};
+use bcclink::emu::{self, SCREEN_H, SCREEN_W};
 use bcclink::{audio, link, net};
 use eframe::egui;
 use tokio_util::sync::CancellationToken;
@@ -182,7 +183,7 @@ struct App {
     link: Arc<link::Link>,
     emu: Option<emu::Emu>,
     _audio: Option<audio::Backend>,
-    rom_crc32: Option<u32>,
+    game: Option<&'static emu::Game>,
 
     status: Arc<Mutex<net::Status>>,
     cancel: Option<CancellationToken>,
@@ -214,7 +215,7 @@ impl App {
             link: Arc::new(link::Link::new()),
             emu: None,
             _audio: None,
-            rom_crc32: None,
+            game: None,
             status: Arc::new(Mutex::new(net::Status::Idle)),
             cancel: None,
             screen: None,
@@ -238,19 +239,20 @@ impl App {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("pick a save"))?;
             let rom = std::fs::read(&rom_path)?;
-            let crc = crc32fast::hash(&rom);
-            if crc != BCC_US_CRC32 {
-                anyhow::bail!(
-                    "{} doesn't look like Battle Chip Challenge (US): crc32 {crc:08x}, expected {BCC_US_CRC32:08x}",
-                    rom_path.display()
-                );
-            }
+            let game = emu::identify(&rom).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} doesn't look like {}: crc32 {:08x}",
+                    rom_path.display(),
+                    emu::supported_titles(),
+                    crc32fast::hash(&rom)
+                )
+            })?;
             let save_file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .open(&save_path)?;
-            let emu = emu::start(rom, save_file, self.link.clone())?;
+            let emu = emu::start(rom, save_file, game, self.link.clone())?;
             if let Some(sdl) = &self.sdl {
                 match audio::Backend::new(&sdl.sdl, emu.handle.clone()) {
                     Ok(backend) => self._audio = Some(backend),
@@ -261,7 +263,7 @@ impl App {
             } else {
                 anyhow::bail!("SDL audio unavailable; can't run");
             }
-            self.rom_crc32 = Some(crc);
+            self.game = Some(game);
             self.emu = Some(emu);
             Ok(())
         })();
@@ -283,11 +285,11 @@ impl App {
         self._audio = None;
         self.emu = None;
         self.screen = None;
-        self.rom_crc32 = None;
+        self.game = None;
     }
 
     fn connect(&mut self) {
-        let Some(crc) = self.rom_crc32 else { return };
+        let Some(game) = self.game else { return };
         self.disconnect();
         self.error = None;
         let cancel = CancellationToken::new();
@@ -296,7 +298,7 @@ impl App {
             net::ConnectParams {
                 endpoint: self.cfg.matchmaking_endpoint.clone(),
                 link_code: self.cfg.link_code.clone(),
-                rom_crc32: crc,
+                rom_crc32: game.crc32,
             },
             self.link.clone(),
             self.status.clone(),
@@ -349,7 +351,7 @@ impl App {
         ui.vertical_centered(|ui| {
             ui.add_space(24.0);
             ui.heading("bcclink");
-            ui.label("link play for Mega Man Battle Chip Challenge (US)");
+            ui.label("link play for Mega Man Battle Chip Challenge / Rockman EXE Battle Chip GP");
             ui.add_space(16.0);
 
             egui::Grid::new("setup")
@@ -366,8 +368,8 @@ impl App {
                     };
 
                     ui.label("ROM");
-                    if file_button(ui, &self.cfg.rom_path, "choose the US ROM…")
-                        .on_hover_text("Battle Chip Challenge (US)")
+                    if file_button(ui, &self.cfg.rom_path, "choose a ROM…")
+                        .on_hover_text("Battle Chip Challenge (US) or Battle Chip GP (JP)")
                         .clicked()
                     {
                         self.pick_rom();
@@ -390,7 +392,7 @@ impl App {
                                     .map(|n| n.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| "bcc.sav".to_owned()),
                             )
-                            .save_file()
+                            .pick_file()
                         {
                             self.cfg.save_path = Some(path);
                         }
@@ -442,7 +444,7 @@ impl App {
     fn pick_rom(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("GBA ROM", &["gba"])
-            .set_title("Battle Chip Challenge (US) ROM")
+            .set_title("Battle Chip Challenge (US) / Battle Chip GP (JP) ROM")
             .pick_file()
         else {
             return;
@@ -450,7 +452,7 @@ impl App {
         // Validate right here so a wrong pick is flagged at the picker, not
         // at Start.
         match std::fs::read(&path) {
-            Ok(rom) if crc32fast::hash(&rom) == BCC_US_CRC32 => {
+            Ok(rom) if emu::identify(&rom).is_some() => {
                 // Default the save next to the ROM so the common case is one
                 // click.
                 if self.cfg.save_path.is_none() {
@@ -461,8 +463,9 @@ impl App {
             }
             Ok(_) => {
                 self.error = Some(format!(
-                    "{} doesn't look like Battle Chip Challenge (US)",
-                    path.display()
+                    "{} doesn't look like {}",
+                    path.display(),
+                    emu::supported_titles()
                 ));
             }
             Err(e) => self.error = Some(format!("{}: {e}", path.display())),
@@ -520,11 +523,15 @@ impl App {
                             ui.spinner();
                             ui.weak("waiting for your opponent to enter the same code…");
                         }
-                        net::Status::Connected { side } => {
+                        net::Status::Connected {
+                            side,
+                            cross_version,
+                        } => {
                             ui.colored_label(
                                 OK_COLOR,
                                 format!(
-                                    "linked — you are {} — go to PET -> Transmit in-game",
+                                    "linked{} — you are {} — go to PET -> Transmit in-game",
+                                    if cross_version { " (US↔JP)" } else { "" },
                                     if side == 0 { "P1" } else { "P2" }
                                 ),
                             );

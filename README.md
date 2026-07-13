@@ -1,6 +1,8 @@
 # bcclink
 
-Standalone link-battle netplay for **Mega Man Battle Chip Challenge (US)**.
+Standalone link-battle netplay for **Mega Man Battle Chip Challenge (US)**
+and its JP original, **Rockman EXE Battle Chip GP** — including US↔JP
+crossplay.
 
 This is a single-purpose GBA frontend: it plays the game normally in a
 window, and replaces the link cable with a WebRTC data channel paired
@@ -21,9 +23,13 @@ in-game whenever you're ready. **Stop** returns to the setup screen.
 
 The WebRTC offerer is P1 (parent/left); the answerer is P2. Link codes are
 namespaced (`bcclink-<code>`) so they can never collide with Tango lobby
-codes on the shared server. Both sides need the US ROM (`A89E`, CRC32
-`26be44fd`); per Prof9, EWRAM is identical across regions, so an EU/JP port
-only needs a new set of ROM addresses.
+codes on the shared server. Supported ROMs: US (`A89E`, CRC32 `26be44fd`)
+and JP (`A89J`, CRC32 `9217fb18`). US↔JP crossplay works, like it would
+over a real cable — the JP comm library and battle engine are the US code
+shifted, and cross-version battles (both parent directions, plus the guest
+exchange) proved frame-exact in the `cross`/`crossr` selftests — the status
+bar flags a cross-version link. Per Prof9, EWRAM is identical across
+regions, so an EU port only needs a new set of ROM addresses (`hooks.rs`).
 
 Paths, the link code, and the matchmaking endpoint (under **Advanced**)
 persist across runs.
@@ -51,14 +57,16 @@ persist across runs.
   a fresh seed.
 - If the connection drops mid-battle the game aborts through its own
   comm-error screen; press Connect again and re-enter Transmit.
-- Verification harnesses (both expect `roms/bcc.gba` + `roms/bcc.sav`,
-  untracked): `cargo run --release --example selftest [-- normal|random|guest]
-  [slot]` boots two cores in-process against the real trap set and asserts
+- Verification harnesses (ROMs + saves live untracked in `roms/`:
+  `bcc.gba`/`bcc.sav`, `bcgp.gba`/`bcgp.sav`): `cargo run --release
+  --example selftest [-- normal|random|guest] [slot] [bcgp|cross|crossr]`
+  boots two cores in-process against the real trap set and asserts
   frame-exact sync through a whole battle (`slot` adds asymmetric L/R
   slot-in input; `guest` checks the deck registration, then chains a battle
-  over the same link); `--example mmtest` pairs two clients through the
-  real matchmaking server and pushes bytes through the channel;
-  `cargo test` covers the handshake-generation races.
+  over the same link; `bcgp` runs both cores on the JP ROM, `cross`/`crossr`
+  mix US and JP with either side as parent); `--example mmtest` pairs two
+  clients through the real matchmaking server and pushes bytes through the
+  channel; `cargo test` covers the handshake-generation races.
 
 ## Building
 

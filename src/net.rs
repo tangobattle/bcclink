@@ -9,8 +9,10 @@
 //!
 //! The WebRTC offerer is the parent (side 0); the answerer is the child.
 //! After the channel opens, both sides exchange a hello
-//! (`b"BCCLINK" | version u8 | rom_crc32 u32le | side u8`), then every
-//! message is a [`Link`] wire message verbatim — the data channel preserves
+//! (`b"BCCLINK" | version u8 | rom_crc32 u32le | side u8`) — the CRC is
+//! informational (US↔JP crossplay is allowed; it only drives the
+//! cross-version indicator) — then every message is a [`Link`] wire message
+//! verbatim — the data channel preserves
 //! message boundaries, so there's no framing. App-level keepalives (1 s,
 //! 10 s timeout) catch a peer that vanished without tearing the connection
 //! down.
@@ -43,8 +45,11 @@ pub enum Status {
     /// Registered under the link code; the peer hasn't shown up yet.
     WaitingForPeer,
     /// Channel open and hello exchanged. `side` is ours (0 = parent).
+    /// `cross_version` flags a peer running a different (still supported)
+    /// ROM version — US↔JP crossplay.
     Connected {
         side: u8,
+        cross_version: bool,
     },
     /// The connection ended (peer left, transport died, or hello failed).
     Lost(String),
@@ -156,10 +161,16 @@ async fn run_connection(
             peer_hello[7]
         );
     }
+    // A differing CRC is allowed: bcclink refuses to start an unsupported
+    // ROM, so a mismatched peer is necessarily the other region's build —
+    // US↔JP crossplay, which the cable never gated either. Cross-version
+    // battles proved frame-exact in the cross selftest; surface the fact
+    // anyway so a surprise has a visible cause.
     let peer_crc = u32::from_le_bytes(peer_hello[8..12].try_into().unwrap());
-    if peer_crc != params.rom_crc32 {
-        anyhow::bail!(
-            "ROM mismatch (their crc32 {peer_crc:08x}, ours {:08x})",
+    let cross_version = peer_crc != params.rom_crc32;
+    if cross_version {
+        log::info!(
+            "cross-version link: their crc32 {peer_crc:08x}, ours {:08x}",
             params.rom_crc32
         );
     }
@@ -169,7 +180,7 @@ async fn run_connection(
 
     log::info!("link up as side {side}");
     link.set_connected(side);
-    *status.lock().unwrap() = Status::Connected { side };
+    *status.lock().unwrap() = Status::Connected { side, cross_version };
 
     // Ferry until something dies. Sender: drain the link at a short interval
     // (the stream is a few bytes per turn; the game's own -1 "still waiting"

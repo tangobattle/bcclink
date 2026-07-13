@@ -10,7 +10,42 @@ use crate::link::Link;
 
 pub const SCREEN_W: u32 = 240;
 pub const SCREEN_H: u32 = 160;
-pub const BCC_US_CRC32: u32 = 0x26be44fd;
+
+/// A supported ROM: identified by full-file CRC32, hooked via its offsets
+/// table. The netplay hello exchanges CRCs but doesn't gate on them — US↔JP
+/// crossplay is allowed (see [`crate::net`]).
+pub struct Game {
+    pub crc32: u32,
+    pub title: &'static str,
+    pub offsets: &'static hooks::Offsets,
+}
+
+pub static GAMES: [Game; 2] = [
+    Game {
+        crc32: 0x26be44fd,
+        title: "Mega Man Battle Chip Challenge (US)",
+        offsets: &hooks::A89E_00,
+    },
+    Game {
+        crc32: 0x9217fb18,
+        title: "Rockman EXE Battle Chip GP (JP)",
+        offsets: &hooks::A89J_00,
+    },
+];
+
+pub fn identify(rom: &[u8]) -> Option<&'static Game> {
+    let crc = crc32fast::hash(rom);
+    GAMES.iter().find(|game| game.crc32 == crc)
+}
+
+/// For "unsupported ROM" error messages.
+pub fn supported_titles() -> String {
+    GAMES
+        .iter()
+        .map(|game| game.title)
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
 
 pub struct Emu {
     pub handle: mgba::thread::Handle,
@@ -20,7 +55,12 @@ pub struct Emu {
     _thread: mgba::thread::Thread,
 }
 
-pub fn start(rom: Vec<u8>, save_file: std::fs::File, link: Arc<Link>) -> anyhow::Result<Emu> {
+pub fn start(
+    rom: Vec<u8>,
+    save_file: std::fs::File,
+    game: &'static Game,
+    link: Arc<Link>,
+) -> anyhow::Result<Emu> {
     let mut core = mgba::core::Core::new_gba(
         "bcclink",
         &mgba::core::Options {
@@ -33,7 +73,7 @@ pub fn start(rom: Vec<u8>, save_file: std::fs::File, link: Arc<Link>) -> anyhow:
     core.enable_video_buffer();
     core.as_mut().load_rom(mgba::vfile::VFile::from_vec(rom))?;
     core.as_mut().load_save(mgba::vfile::VFile::from_file(save_file))?;
-    core.set_traps(hooks::traps(&hooks::A89E_00, link));
+    core.set_traps(hooks::traps(game.offsets, link));
 
     let vbuf = Arc::new(Mutex::new(vec![0u8; (SCREEN_W * SCREEN_H * 2) as usize]));
     let dirty = Arc::new(AtomicBool::new(false));

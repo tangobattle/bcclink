@@ -5,7 +5,11 @@
 //! `mgba/examples/bcc_pvp.rs` in the Tango repo). Prof9's ChipControl mod
 //! establishes that BCC's EWRAM layout is identical across US/EU/JP — only
 //! ROM `0x08xxxxxx` addresses shift — so a JP/EU port needs a new
-//! [`RomOffsets`] but can keep [`Ewram`].
+//! [`RomOffsets`] but can keep [`Ewram`]. The JP original ([`A89J_00`])
+//! bears this out: its whole comm library is the US one shifted down by
+//! `0x2F8` — every hooked function matched instruction-for-instruction with
+//! only ROM literals shifted, and every EWRAM/IO literal (including the comm
+//! struct) byte-identical. An EU port still needs its own table.
 //!
 //! The player drives the whole flow themselves: boot the game, load a save,
 //! and walk to **PET → Transmit** when they want to link. All three Transmit
@@ -94,6 +98,25 @@ pub static A89E_00: Offsets = Offsets {
         drv_d: 0x0804aa94,
         barrier_sends: [0x0804ac88, 0x0804acdc, 0x0804ac48, 0x0804ad24],
         barrier_polls: [0x0804acac, 0x0804ad00, 0x0804ac64, 0x0804ad3c],
+    },
+};
+
+/// JP (Rockman EXE Battle Chip GP), `A89J`, rev 0. Every ROM address is the
+/// US one minus `0x2F8`; the EWRAM layout is unchanged.
+pub static A89J_00: Offsets = Offsets {
+    ewram: Ewram {
+        comm_struct: 0x0200bd20,
+    },
+    rom: RomOffsets {
+        link_pump: 0x0804aa54,
+        side_latch: 0x0804a0cc,
+        drv_a_loader: 0x0804a19c,
+        drv_a: 0x0804a1b8,
+        drv_b: 0x0804a39c,
+        drv_c: 0x0804a5b4,
+        drv_d: 0x0804a79c,
+        barrier_sends: [0x0804a990, 0x0804a9e4, 0x0804a950, 0x0804aa2c],
+        barrier_polls: [0x0804a9b4, 0x0804aa08, 0x0804a96c, 0x0804aa44],
     },
 };
 
@@ -189,8 +212,8 @@ pub fn traps(offsets: &'static Offsets, link: Arc<Link>) -> Vec<Trap> {
     // both WAIT for the other's word (the real drvD is a rendezvous: the
     // parent checks the child's frame before completing); then the parent's
     // word is the agreed one — the child takes it, and the child's own ROM
-    // code (0x08048B02..06) copies the rng16 into its RNG. Guest mode never
-    // reaches this phase.
+    // code (US 0x08048B02..06, JP 0x08048806..0A) copies the rng16 into its
+    // RNG. Guest mode never reaches this phase.
     v.push((o.drv_d, {
         let link = link.clone();
         Box::new(move |mut core: mgba::core::CoreMutRef| {

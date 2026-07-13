@@ -60,7 +60,7 @@ fn main() {
         .map(|i| {
             wait_for(&format!("client {i} connected"), Duration::from_secs(60), || {
                 match &*statuses[i].lock().unwrap() {
-                    net::Status::Connected { side } => Some(*side),
+                    net::Status::Connected { side, .. } => Some(*side),
                     net::Status::Lost(e) => panic!("client {i} lost: {e}"),
                     _ => None,
                 }

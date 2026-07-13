@@ -20,15 +20,19 @@
 //!   Transmit in Normal mode and run a battle to KO, proving the guest
 //!   session closes cleanly and the same link carries a second handshake.
 //!
-//! Run: cargo run --release -p bcclink --example selftest [-- normal|random|guest] [slot]
+//! Run: cargo run --release -p bcclink --example selftest [-- normal|random|guest] [slot] [bcgp|cross|crossr]
 //!   (`slot`: core 0 pulses L-slot and core 1 pulses R-slot during battle —
-//!   asymmetric input that only stays in sync if genuinely relayed.)
+//!   asymmetric input that only stays in sync if genuinely relayed.
+//!   `bcgp`: both cores run the JP ROM; `cross`: core 0 (the parent) runs US
+//!   and core 1 JP; `crossr` the other way round — the crossplay proofs, in
+//!   both drvD parent directions. Each core's save sits next to its ROM:
+//!   roms/bcc.sav / roms/bcgp.sav.)
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use bcclink::hooks;
 use bcclink::link::Link;
+use bcclink::{emu, hooks};
 
 const UNIT_L_HP: u32 = 0x0200_b832;
 const UNIT_R_HP: u32 = 0x0200_b8c2;
@@ -66,29 +70,45 @@ fn shot(core: &mgba::core::Core, path: &str) {
     }
 }
 
+/// Harness-only: the keypad-read hook where the nav masher injects input —
+/// a ROM address, so it shifts per version like the hooked comm library.
+fn keypad_read(game: &emu::Game) -> u32 {
+    match game.crc32 {
+        0x9217fb18 => 0x08001ce2, // JP (A89J)
+        _ => 0x08001cee,          // US (A89E)
+    }
+}
+
 fn boot(
-    rom: &[u8],
-    save: &[u8],
+    rom_path: &str,
     name: &str,
     link: Arc<Link>,
     frame: Arc<AtomicU32>,
     mode: Arc<AtomicU8>,
 ) -> mgba::core::Core {
+    let rom = std::fs::read(rom_path)
+        .unwrap_or_else(|e| panic!("run from the repo root: {rom_path}: {e}"));
+    let save_path = rom_path.replace(".gba", ".sav");
+    let save = std::fs::read(&save_path).unwrap_or_else(|e| panic!("{save_path}: {e}"));
+    let game = emu::identify(&rom)
+        .unwrap_or_else(|| panic!("{rom_path} isn't a supported ROM"));
+    println!("[selftest] {name}: {rom_path} ({})", game.title);
+
     let mut core = mgba::core::Core::new_gba(name, &mgba::core::Options::default()).unwrap();
     core.enable_video_buffer();
-    core.as_mut().load_rom(mgba::vfile::VFile::from_vec(rom.to_vec())).unwrap();
+    core.as_mut().load_rom(mgba::vfile::VFile::from_vec(rom)).unwrap();
     core.as_mut()
-        .load_save(mgba::vfile::VFile::from_vec(save.to_vec()))
+        .load_save(mgba::vfile::VFile::from_vec(save))
         .unwrap();
 
-    let mut traps = hooks::traps(&hooks::A89E_00, link);
+    let mut traps = hooks::traps(game.offsets, link);
 
     // Headless menu nav (harness-only): mash A+START at the keypad read and
     // poke the hub/PET selections until the comm applet takes over, forcing
     // the comm-mode byte to the mode under test until the applet's drvA
     // loader (substate 4) has read it.
     traps.push((
-        0x08001cee,
+        keypad_read(game),
         Box::new(move |mut core: mgba::core::CoreMutRef| {
             let program = core.raw_read_8(COMM_PROGRAM, -1);
             let substate = core.raw_read_8(COMM_SUBSTATE, -1);
@@ -135,10 +155,16 @@ fn main() {
         0
     };
     let mode_name = ["normal", "random", "guest"][mode as usize];
+    let (rom0, rom1) = if args.iter().any(|a| a == "cross") {
+        ("roms/bcc.gba", "roms/bcgp.gba")
+    } else if args.iter().any(|a| a == "crossr") {
+        ("roms/bcgp.gba", "roms/bcc.gba")
+    } else if args.iter().any(|a| a == "bcgp") {
+        ("roms/bcgp.gba", "roms/bcgp.gba")
+    } else {
+        ("roms/bcc.gba", "roms/bcc.gba")
+    };
     println!("[selftest] mode: {mode_name}, slot: {slot}");
-
-    let rom = std::fs::read("roms/bcc.gba").expect("run from the repo root: roms/bcc.gba not found");
-    let save = std::fs::read("roms/bcc.sav").expect("roms/bcc.sav not found");
 
     // What the transport hello does on both ends.
     let link0 = Arc::new(Link::new());
@@ -150,8 +176,8 @@ fn main() {
     // after the exchange to chain a battle over the same link.
     let forced_mode = Arc::new(AtomicU8::new(mode));
     let frame = Arc::new(AtomicU32::new(0));
-    let mut c0 = boot(&rom, &save, "bcclink-st-0", link0.clone(), frame.clone(), forced_mode.clone());
-    let mut c1 = boot(&rom, &save, "bcclink-st-1", link1.clone(), frame.clone(), forced_mode.clone());
+    let mut c0 = boot(rom0, "bcclink-st-0", link0.clone(), frame.clone(), forced_mode.clone());
+    let mut c1 = boot(rom1, "bcclink-st-1", link1.clone(), frame.clone(), forced_mode.clone());
     c0.as_mut().reset();
     c1.as_mut().reset();
 
