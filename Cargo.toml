@@ -2,7 +2,7 @@
 # The app is "Ring"; the package carries a -bcc suffix so it can never be
 # confused with the `ring` crypto crate already in the dependency graph.
 name = "ring-bcc"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MPL-2.0"
 publish = false
