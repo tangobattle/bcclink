@@ -516,7 +516,16 @@ impl App {
                 Task::none()
             }
             Message::LinkCodeChanged(code) => {
-                self.cfg.link_code = code;
+                // Same restrictions as tango: [a-z0-9-] only, capped at 100.
+                // Lowercased as typed — matchmaking is case-sensitive, so
+                // this keeps a code read aloud or retyped from a screenshot
+                // from missing its lobby.
+                self.cfg.link_code = code
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .map(|c| c.to_ascii_lowercase())
+                    .take(100)
+                    .collect();
                 Task::none()
             }
             Message::EndpointChanged(endpoint) => {

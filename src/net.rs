@@ -2,7 +2,7 @@
 //! a tango-rtc peer connection.
 //!
 //! Both players enter the same link code; the code is namespaced
-//! (`bcc:<code>`) so it can never pair with a Tango client on the shared
+//! (`ring:<code>`) so it can never pair with a Tango client on the shared
 //! server. The session runs over a single **reliable + ordered** WebRTC data
 //! channel — exactly what the lockstep byte stream needs — and NAT traversal
 //! (STUN/TURN) comes with the ICE config the server hands out.
@@ -109,7 +109,7 @@ async fn run_connection(
 
     // Namespaced so a Ring code can never collide with a Tango lobby code
     // on the shared server.
-    let session_id = format!("bcc:{}", params.link_code.trim().to_lowercase());
+    let session_id = format!("ring:{}", params.link_code.trim().to_lowercase());
     let connecting = tango_signaling::connect(
         &params.endpoint,
         &session_id,
@@ -126,13 +126,17 @@ async fn run_connection(
     .map_err(|e| anyhow::anyhow!("matchmaking: {e}"))?;
 
     *status.lock().unwrap() = Status::WaitingForPeer;
-    let connected = connecting.await.map_err(|e| anyhow::anyhow!("webrtc: {e}"))?;
+    let connected = connecting
+        .await
+        .map_err(|e| anyhow::anyhow!("webrtc: {e}"))?;
 
     // The peer connection must stay alive for the channel's lifetime; hold
     // it here until this function returns.
     let peer_conn = connected.peer_conn;
     let mut channels = connected.channels;
-    let mut dc = channels.pop().ok_or_else(|| anyhow::anyhow!("no data channel"))?;
+    let mut dc = channels
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("no data channel"))?;
 
     // Offerer = parent. The SDP roles are asymmetric by construction; the
     // hello's side byte double-checks that both ends resolved them that way.
@@ -186,7 +190,10 @@ async fn run_connection(
 
     log::info!("link up as side {side}");
     link.set_connected(side);
-    *status.lock().unwrap() = Status::Connected { side, cross_version };
+    *status.lock().unwrap() = Status::Connected {
+        side,
+        cross_version,
+    };
 
     // Ferry until something dies. Sender: drain the link at a short interval
     // (the stream is a few bytes per turn; the game's own -1 "still waiting"

@@ -24,7 +24,7 @@ Enter) — the matchmaking server pairs you and NAT traversal is handled
 in-game whenever you're ready. **Stop** returns to the setup screen.
 
 The WebRTC offerer is P1 (parent/left); the answerer is P2. Link codes are
-namespaced (`bcc:<code>`) so they can never collide with Tango lobby
+namespaced (`ring:<code>`) so they can never collide with Tango lobby
 codes on the shared server. ROMs are identified by header game code: US
 (`A89E`) or JP (`A89J`), rev 0 — so patched ROMs work as long as the header
 is intact (keep both sides' patches identical, or battles may desync; the
