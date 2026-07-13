@@ -1,11 +1,11 @@
-//! bcclink — standalone netplay for Mega Man Battle Chip Challenge (US) and
+//! Ring — standalone netplay for Mega Man Battle Chip Challenge (US) and
 //! its JP original, Rockman EXE Battle Chip GP.
 //!
 //! An iced window over an mgba core, with SDL3 for audio + gamepads (the
 //! same split Tango uses) and exactly one trick: the game's link-cable comm
 //! library is replaced by a WebRTC data channel paired through tango's
-//! matchmaking server (see [`bcclink::hooks`] / [`bcclink::link`] /
-//! [`bcclink::net`]). There is no lobby and no autopilot. The UI is two
+//! matchmaking server (see [`ring_bcc::hooks`] / [`ring_bcc::link`] /
+//! [`ring_bcc::net`]). There is no lobby and no autopilot. The UI is two
 //! screens: a setup screen (pick ROM + save, start the game) and the game
 //! screen, whose top bar holds the link code and connection status. Trade a
 //! link code with your opponent, Connect, and walk to **PET → Transmit**
@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use bcclink::emu::{self, SCREEN_H, SCREEN_W};
-use bcclink::{audio, link, net};
+use ring_bcc::emu::{self, SCREEN_H, SCREEN_W};
+use ring_bcc::{audio, link, net};
 use iced::widget::{button, column, container, image, row, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,7 @@ const TEXT_CAPTION: f32 = 11.0;
 
 fn theme(_app: &App) -> iced::Theme {
     iced::Theme::custom(
-        "bcclink".to_owned(),
+        "Ring".to_owned(),
         iced::theme::Palette {
             background: BG,
             text: TEXT,
@@ -91,7 +91,7 @@ impl Default for Config {
 
 impl Config {
     fn path() -> Option<PathBuf> {
-        let dirs = directories_next::ProjectDirs::from("", "", "bcclink")?;
+        let dirs = directories_next::ProjectDirs::from("", "", "ring")?;
         Some(dirs.config_dir().join("config.json"))
     }
 
@@ -168,7 +168,7 @@ impl Sdl {
             "SDL_AUDIO_DEVICE_SAMPLE_FRAMES",
             &audio::SAMPLES.to_string(),
         );
-        sdl3::hint::set("SDL_APP_NAME", "bcclink");
+        sdl3::hint::set("SDL_APP_NAME", "Ring");
         let sdl = sdl3::init().map_err(|e| anyhow::anyhow!("sdl3 init: {e}"))?;
         let gamepads = sdl
             .gamepad()
@@ -610,7 +610,7 @@ impl App {
         let can_play = self.cfg.rom_path.is_some() && self.cfg.save_path.is_some();
 
         let mut card = column![
-            text("bcclink").size(TEXT_TITLE),
+            text("Ring").size(TEXT_TITLE),
             text("link play for Battle Chip Challenge / Battle Chip GP")
                 .size(TEXT_CAPTION)
                 .color(WEAK),
@@ -853,6 +853,20 @@ fn key_message(
     }
 }
 
+/// Decode the embedded `assets/icon.png` into an iced `window::Icon`.
+/// Returns `None` on any failure — a corrupt asset just leaves the OS
+/// default icon, no need to escalate. (Windows also gets the exe's embedded
+/// ICON resource via build.rs; macOS ignores this, its icon would come from
+/// an app bundle.)
+fn load_window_icon() -> Option<iced::window::Icon> {
+    // `::image` — the crate; plain `image` is the iced widget imported above.
+    let img = ::image::load_from_memory(include_bytes!("../assets/icon.png"))
+        .ok()?
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    iced::window::icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     iced::application(App::new, App::update, App::view)
@@ -863,7 +877,7 @@ fn main() -> anyhow::Result<()> {
             default_text_size: iced::Pixels(TEXT_BODY),
             ..iced::Settings::default()
         })
-        .title("bcclink")
+        .title("Ring")
         .theme(theme)
         .subscription(App::subscription)
         .window(iced::window::Settings {
@@ -871,6 +885,8 @@ fn main() -> anyhow::Result<()> {
                 SCREEN_W as f32 * 3.0 + 16.0,
                 SCREEN_H as f32 * 3.0 + 110.0,
             ),
+            // OS-level window icon (title bar + taskbar).
+            icon: load_window_icon(),
             // Close goes through Message::CloseRequested so the config gets
             // saved and the session torn down in order.
             exit_on_close_request: false,

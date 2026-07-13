@@ -80,7 +80,7 @@ pub fn start(
     frame_notify: Arc<tokio::sync::Notify>,
 ) -> anyhow::Result<Emu> {
     let mut core = mgba::core::Core::new_gba(
-        "bcclink",
+        "ring",
         &mgba::core::Options {
             // Emulation is paced by the audio stream's consumption; without
             // this the core free-runs as fast as the host allows.

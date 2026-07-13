@@ -20,7 +20,7 @@
 //!   Transmit in Normal mode and run a battle to KO, proving the guest
 //!   session closes cleanly and the same link carries a second handshake.
 //!
-//! Run: cargo run --release -p bcclink --example selftest [-- normal|random|guest] [slot] [bcgp|cross|crossr]
+//! Run: cargo run --release --example selftest [-- normal|random|guest] [slot] [bcgp|cross|crossr]
 //!   (`slot`: core 0 pulses L-slot and core 1 pulses R-slot during battle —
 //!   asymmetric input that only stays in sync if genuinely relayed.
 //!   `bcgp`: both cores run the JP ROM; `cross`: core 0 (the parent) runs US
@@ -31,8 +31,8 @@
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use bcclink::link::Link;
-use bcclink::{emu, hooks};
+use ring_bcc::link::Link;
+use ring_bcc::{emu, hooks};
 
 const UNIT_L_HP: u32 = 0x0200_b832;
 const UNIT_R_HP: u32 = 0x0200_b8c2;
@@ -176,8 +176,8 @@ fn main() {
     // after the exchange to chain a battle over the same link.
     let forced_mode = Arc::new(AtomicU8::new(mode));
     let frame = Arc::new(AtomicU32::new(0));
-    let mut c0 = boot(rom0, "bcclink-st-0", link0.clone(), frame.clone(), forced_mode.clone());
-    let mut c1 = boot(rom1, "bcclink-st-1", link1.clone(), frame.clone(), forced_mode.clone());
+    let mut c0 = boot(rom0, "ring-st-0", link0.clone(), frame.clone(), forced_mode.clone());
+    let mut c1 = boot(rom1, "ring-st-1", link1.clone(), frame.clone(), forced_mode.clone());
     c0.as_mut().reset();
     c1.as_mut().reset();
 
@@ -294,6 +294,6 @@ fn main() {
     } else if mode == 2 {
         println!("[selftest] RESULT: GUEST OK — deck registered, then a chained battle stayed IN SYNC (slot={slot})");
     } else {
-        println!("[selftest] RESULT: {mode_name} stayed IN SYNC (slot={slot}) — bcclink hooks work");
+        println!("[selftest] RESULT: {mode_name} stayed IN SYNC (slot={slot}) — Ring hooks work");
     }
 }

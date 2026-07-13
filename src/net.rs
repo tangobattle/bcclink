@@ -2,14 +2,14 @@
 //! a tango-rtc peer connection.
 //!
 //! Both players enter the same link code; the code is namespaced
-//! (`bcclink-<code>`) so it can never pair with a Tango client on the shared
+//! (`bcc:<code>`) so it can never pair with a Tango client on the shared
 //! server. The session runs over a single **reliable + ordered** WebRTC data
 //! channel — exactly what the lockstep byte stream needs — and NAT traversal
 //! (STUN/TURN) comes with the ICE config the server hands out.
 //!
 //! The WebRTC offerer is the parent (side 0); the answerer is the child.
 //! After the channel opens, both sides exchange a hello
-//! (`b"BCCLINK" | version u8 | game code [u8; 4] | side u8`) — the game
+//! (`b"RING" | version u8 | game code [u8; 4] | side u8`) — the game
 //! code is informational (US↔JP crossplay is allowed; it only drives the
 //! cross-version indicator) — then every message is a [`Link`] wire message
 //! verbatim — the data channel preserves
@@ -29,10 +29,13 @@ use tokio_util::sync::CancellationToken;
 use crate::link::Link;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-const MAGIC: &[u8; 7] = b"BCCLINK";
+const MAGIC: &[u8; 4] = b"RING";
 // v4: the four bytes after the version byte changed meaning from the ROM's
 // crc32 to its header game code.
-const HELLO_VERSION: u8 = 4;
+// v5: the app was renamed from bcclink to Ring; the magic shrank from
+// b"BCCLINK" to b"RING", so the hello is 10 bytes now (old peers fail the
+// magic check before ever reading the version byte).
+const HELLO_VERSION: u8 = 5;
 const KEEPALIVE: u8 = 0xff;
 
 const DRAIN_INTERVAL: Duration = Duration::from_millis(4);
@@ -104,7 +107,7 @@ async fn run_connection(
 ) -> anyhow::Result<()> {
     *status.lock().unwrap() = Status::Signaling;
 
-    // Namespaced so a bcclink code can never collide with a Tango lobby code
+    // Namespaced so a Ring code can never collide with a Tango lobby code
     // on the shared server.
     let session_id = format!("bcc:{}", params.link_code.trim().to_lowercase());
     let connecting = tango_signaling::connect(
@@ -113,7 +116,7 @@ async fn run_connection(
         None, // let ICE pick: direct when possible, TURN when it isn't
         PROTOCOL_VERSION,
         vec![tango_rtc::ChannelConfig {
-            label: "bcclink".to_owned(),
+            label: "ring".to_owned(),
             ordered: true,
             reliable: true,
         }],
@@ -154,21 +157,21 @@ async fn run_connection(
         .await
         .map_err(|_| anyhow::anyhow!("timed out waiting for hello"))?
         .ok_or_else(|| anyhow::anyhow!("channel closed during hello"))?;
-    if peer_hello.len() != 13 || &peer_hello[..7] != MAGIC {
-        anyhow::bail!("peer is not a compatible bcclink instance");
+    if peer_hello.len() != 10 || &peer_hello[..4] != MAGIC {
+        anyhow::bail!("peer is not a compatible Ring instance");
     }
-    if peer_hello[7] != HELLO_VERSION {
+    if peer_hello[4] != HELLO_VERSION {
         anyhow::bail!(
-            "peer bcclink version differs (their hello v{}, ours v{HELLO_VERSION})",
-            peer_hello[7]
+            "peer Ring version differs (their hello v{}, ours v{HELLO_VERSION})",
+            peer_hello[4]
         );
     }
-    // A differing game code is allowed: bcclink refuses to start an
+    // A differing game code is allowed: Ring refuses to start an
     // unsupported ROM, so a mismatched peer is necessarily the other
     // region's build — US↔JP crossplay, which the cable never gated either.
     // Cross-version battles proved frame-exact in the cross selftest;
     // surface the fact anyway so a surprise has a visible cause.
-    let peer_code: [u8; 4] = peer_hello[8..12].try_into().unwrap();
+    let peer_code: [u8; 4] = peer_hello[5..9].try_into().unwrap();
     let cross_version = peer_code != params.game_code;
     if cross_version {
         log::info!(
@@ -177,7 +180,7 @@ async fn run_connection(
             String::from_utf8_lossy(&params.game_code)
         );
     }
-    if peer_hello[12] == side {
+    if peer_hello[9] == side {
         anyhow::bail!("role conflict (both sides resolved side {side}); reconnect");
     }
 

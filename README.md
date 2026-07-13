@@ -1,4 +1,6 @@
-# bcclink
+<p align="center"><img src="assets/logo.svg" width="128" alt="Ring logo"></p>
+
+# Ring
 
 Standalone link-battle netplay for **Mega Man Battle Chip Challenge (US)**
 and its JP original, **Rockman EXE Battle Chip GP** — including US↔JP
@@ -13,7 +15,7 @@ cable. The connect screen waits until your opponent is standing in theirs.
 
 ## Usage
 
-Run `bcclink`, pick your ROM and save on the setup screen (the save is
+Run `ring`, pick your ROM and save on the setup screen (the save is
 created if missing and written through as you save in-game), and press
 **Start game**. To battle, agree on a link code with your opponent, both
 type it into the bar above the game, and press **Connect** (or just hit
@@ -22,7 +24,7 @@ Enter) — the matchmaking server pairs you and NAT traversal is handled
 in-game whenever you're ready. **Stop** returns to the setup screen.
 
 The WebRTC offerer is P1 (parent/left); the answerer is P2. Link codes are
-namespaced (`bcclink-<code>`) so they can never collide with Tango lobby
+namespaced (`bcc:<code>`) so they can never collide with Tango lobby
 codes on the shared server. ROMs are identified by header game code: US
 (`A89E`) or JP (`A89J`), rev 0 — so patched ROMs work as long as the header
 is intact (keep both sides' patches identical, or battles may desync; the

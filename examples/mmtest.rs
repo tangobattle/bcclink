@@ -5,13 +5,13 @@
 //!
 //! Needs network access (and the matchmaking server up).
 //!
-//! Run: cargo run --release -p bcclink --example mmtest [-- wss://server]
+//! Run: cargo run --release --example mmtest [-- wss://server]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use bcclink::link::{BlockKind, Link, Poll};
-use bcclink::net;
+use ring_bcc::link::{BlockKind, Link, Poll};
+use ring_bcc::net;
 use tokio_util::sync::CancellationToken;
 
 fn wait_for<T>(what: &str, timeout: Duration, mut f: impl FnMut() -> Option<T>) -> T {

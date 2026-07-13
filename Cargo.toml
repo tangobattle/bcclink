@@ -1,9 +1,16 @@
 [package]
-name = "bcclink"
+# The app is "Ring"; the package carries a -bcc suffix so it can never be
+# confused with the `ring` crypto crate already in the dependency graph.
+name = "ring-bcc"
 version = "0.3.0"
 edition = "2021"
 license = "MPL-2.0"
 publish = false
+
+# The shipped executable is still `ring`.
+[[bin]]
+name = "ring"
+path = "src/main.rs"
 
 [workspace]
 
@@ -28,9 +35,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 tokio-util = "0.7"
 directories-next = "2"
 env_logger = "0.9"
+# png only: decodes the embedded window icon (assets/icon.png). The selftest
+# example also uses it for screenshot dumps.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+# Windows-only: compiles resource.rc (exe/taskbar icon + VERSIONINFO) into
+# the exe. No-op on other targets via the cfg check in build.rs.
+embed-resource = "1"
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
 rand = "0.8"
 
 [lints.clippy]

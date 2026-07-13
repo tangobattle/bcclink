@@ -23,9 +23,9 @@ jobs:
           git fetch --tags --force
           msg=$(git for-each-ref --format='%(contents)' refs/tags/${{ github.ref_name }})
           {
-            echo 'msg<<BCCLINK_TAG_MSG_EOF'
+            echo 'msg<<RING_TAG_MSG_EOF'
             echo "$msg"
-            echo 'BCCLINK_TAG_MSG_EOF'
+            echo 'RING_TAG_MSG_EOF'
           } >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
@@ -81,12 +81,12 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          cp target/release/bcclink.exe dist/bcclink-x86_64-windows.exe
+          cp target/release/ring.exe dist/ring-x86_64-windows.exe
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: ./dist/bcclink-x86_64-windows.exe
+          files: ./dist/ring-x86_64-windows.exe
 
   release-linux-x86_64:
     # Pin to Ubuntu 22.04 so the produced binary links against an older glibc
@@ -136,12 +136,12 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir dist
-          cp target/release/bcclink dist/bcclink-x86_64-linux
+          cp target/release/ring dist/ring-x86_64-linux
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: ./dist/bcclink-x86_64-linux
+          files: ./dist/ring-x86_64-linux
 
   release-mac-universal:
     runs-on: macos-14
@@ -176,11 +176,11 @@ jobs:
           cargo build --release --target aarch64-apple-darwin
           mkdir dist
           lipo -create \
-            target/x86_64-apple-darwin/release/bcclink \
-            target/aarch64-apple-darwin/release/bcclink \
-            -output dist/bcclink-macos
+            target/x86_64-apple-darwin/release/ring \
+            target/aarch64-apple-darwin/release/ring \
+            -output dist/ring-macos
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: ./dist/bcclink-macos
+          files: ./dist/ring-macos
