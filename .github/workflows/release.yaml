@@ -1,0 +1,185 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  create-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      # Resolve the pushed tag back to its annotated message (if any).
+      # Lightweight tags have no message; the release body falls back to
+      # empty in that case, matching what `gh release create` would do.
+      - id: tag-msg
+        run: |
+          git fetch --tags --force
+          msg=$(git for-each-ref --format='%(contents)' refs/tags/${{ github.ref_name }})
+          {
+            echo 'msg<<BCCLINK_TAG_MSG_EOF'
+            echo "$msg"
+            echo 'BCCLINK_TAG_MSG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.tag-msg.outputs.msg }}
+          # Semver prereleases carry a `-` after the version number
+          # (e.g. v1.0.0-alpha.0); a plain `v1.2.3` never contains `-`,
+          # so tag-name search is a clean check.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  release-win32-x64:
+    runs-on: windows-2022
+    needs: create-release
+    env:
+      # The mgba git dep's vendored cmake_minimum_required predates what
+      # modern CMake accepts.
+      CMAKE_POLICY_VERSION_MINIMUM: 3.5
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: pat-s/always-upload-cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: win32-x64-msvc-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # tango-signaling's build script runs prost-build.
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Source MSVC vcvars (cl.exe / link.exe / Windows SDK) into the rest
+      # of the workflow so cmake + cc-rs all pick up the same MSVC toolset.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/bcclink.exe dist/bcclink-x86_64-windows.exe
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ./dist/bcclink-x86_64-windows.exe
+
+  release-linux-x86_64:
+    # Pin to Ubuntu 22.04 so the produced binary links against an older glibc
+    # and stays runnable on the broadest spread of user distributions.
+    runs-on: ubuntu-22.04
+    needs: create-release
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: 3.5
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: pat-s/always-upload-cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      # clang/cmake for the mgba + SDL3 C builds; ALSA/pulse/udev/dbus dev
+      # headers for SDL3's audio + gamepad backends; GTK3 for rfd's file
+      # dialogs; X11/wayland/xkb dev headers for winit + SDL.
+      - name: Install system packages
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential clang cmake pkgconf \
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
+            libgtk-3-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage artifact
+        run: |
+          mkdir dist
+          cp target/release/bcclink dist/bcclink-x86_64-linux
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ./dist/bcclink-x86_64-linux
+
+  release-mac-universal:
+    runs-on: macos-14
+    needs: create-release
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: 3.5
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: pat-s/always-upload-cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: darwin-universal-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Build
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          mkdir dist
+          lipo -create \
+            target/x86_64-apple-darwin/release/bcclink \
+            target/aarch64-apple-darwin/release/bcclink \
+            -output dist/bcclink-macos
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ./dist/bcclink-macos

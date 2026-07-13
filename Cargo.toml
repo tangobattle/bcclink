@@ -1,0 +1,36 @@
+[package]
+name = "bcclink"
+version = "0.2.0"
+edition = "2021"
+license = "MPL-2.0"
+publish = false
+
+[workspace]
+
+# The emulator and transport crates come from the tango repo; Cargo.lock pins
+# the exact rev.
+[dependencies]
+mgba = { git = "https://github.com/tangobattle/tango" }
+tango-rtc = { git = "https://github.com/tangobattle/tango" }
+tango-signaling = { git = "https://github.com/tangobattle/tango" }
+sdl3 = { version = "0.18", default-features = false, features = ["build-from-source-static"] }
+eframe = "0.31"
+rfd = "0.14"
+anyhow = "1"
+bytemuck = "1"
+crc32fast = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-util = "0.7"
+directories-next = "2"
+env_logger = "0.9"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+rand = "0.8"
+
+[lints.clippy]
+new_without_default = "allow"
+type_complexity = "allow"
