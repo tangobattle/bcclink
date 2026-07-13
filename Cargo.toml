@@ -1,6 +1,6 @@
 [package]
 name = "bcclink"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MPL-2.0"
 publish = false
@@ -14,11 +14,13 @@ mgba = { git = "https://github.com/tangobattle/mgba-rs" }
 tango-rtc = { git = "https://github.com/tangobattle/tango-rtc" }
 tango-signaling = { git = "https://github.com/tangobattle/tango-signaling" }
 sdl3 = { version = "0.18", default-features = false, features = ["build-from-source-static"] }
-eframe = "0.31"
+# Same UI stack as tango. `image-without-codecs` gives the image widget
+# without pulling decoders — the screen is raw RGBA from the emulator.
+iced = { version = "0.14", features = ["tokio", "image-without-codecs", "advanced"] }
+futures = "0.3"
 rfd = "0.14"
 anyhow = "1"
 bytemuck = "1"
-crc32fast = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

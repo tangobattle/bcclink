@@ -9,8 +9,8 @@
 //!
 //! The WebRTC offerer is the parent (side 0); the answerer is the child.
 //! After the channel opens, both sides exchange a hello
-//! (`b"BCCLINK" | version u8 | rom_crc32 u32le | side u8`) — the CRC is
-//! informational (US↔JP crossplay is allowed; it only drives the
+//! (`b"BCCLINK" | version u8 | game code [u8; 4] | side u8`) — the game
+//! code is informational (US↔JP crossplay is allowed; it only drives the
 //! cross-version indicator) — then every message is a [`Link`] wire message
 //! verbatim — the data channel preserves
 //! message boundaries, so there's no framing. App-level keepalives (1 s,
@@ -30,7 +30,9 @@ use crate::link::Link;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const MAGIC: &[u8; 7] = b"BCCLINK";
-const HELLO_VERSION: u8 = 3;
+// v4: the four bytes after the version byte changed meaning from the ROM's
+// crc32 to its header game code.
+const HELLO_VERSION: u8 = 4;
 const KEEPALIVE: u8 = 0xff;
 
 const DRAIN_INTERVAL: Duration = Duration::from_millis(4);
@@ -58,7 +60,7 @@ pub enum Status {
 pub struct ConnectParams {
     pub endpoint: String,
     pub link_code: String,
-    pub rom_crc32: u32,
+    pub game_code: [u8; 4],
 }
 
 /// Spawn the connect task on `rt`. Runs until the connection dies or
@@ -144,7 +146,7 @@ async fn run_connection(
     let mut hello = Vec::new();
     hello.extend_from_slice(MAGIC);
     hello.push(HELLO_VERSION);
-    hello.extend_from_slice(&params.rom_crc32.to_le_bytes());
+    hello.extend_from_slice(&params.game_code);
     hello.push(side);
     dc.send(&hello).await?;
 
@@ -161,17 +163,18 @@ async fn run_connection(
             peer_hello[7]
         );
     }
-    // A differing CRC is allowed: bcclink refuses to start an unsupported
-    // ROM, so a mismatched peer is necessarily the other region's build —
-    // US↔JP crossplay, which the cable never gated either. Cross-version
-    // battles proved frame-exact in the cross selftest; surface the fact
-    // anyway so a surprise has a visible cause.
-    let peer_crc = u32::from_le_bytes(peer_hello[8..12].try_into().unwrap());
-    let cross_version = peer_crc != params.rom_crc32;
+    // A differing game code is allowed: bcclink refuses to start an
+    // unsupported ROM, so a mismatched peer is necessarily the other
+    // region's build — US↔JP crossplay, which the cable never gated either.
+    // Cross-version battles proved frame-exact in the cross selftest;
+    // surface the fact anyway so a surprise has a visible cause.
+    let peer_code: [u8; 4] = peer_hello[8..12].try_into().unwrap();
+    let cross_version = peer_code != params.game_code;
     if cross_version {
         log::info!(
-            "cross-version link: their crc32 {peer_crc:08x}, ours {:08x}",
-            params.rom_crc32
+            "cross-version link: their game code {}, ours {}",
+            String::from_utf8_lossy(&peer_code),
+            String::from_utf8_lossy(&params.game_code)
         );
     }
     if peer_hello[12] == side {

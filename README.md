@@ -23,8 +23,11 @@ in-game whenever you're ready. **Stop** returns to the setup screen.
 
 The WebRTC offerer is P1 (parent/left); the answerer is P2. Link codes are
 namespaced (`bcclink-<code>`) so they can never collide with Tango lobby
-codes on the shared server. Supported ROMs: US (`A89E`, CRC32 `26be44fd`)
-and JP (`A89J`, CRC32 `9217fb18`). US↔JP crossplay works, like it would
+codes on the shared server. ROMs are identified by header game code: US
+(`A89E`) or JP (`A89J`), rev 0 — so patched ROMs work as long as the header
+is intact (keep both sides' patches identical, or battles may desync; the
+link only relays bytes, it can't reconcile diverged battle data). US↔JP
+crossplay works, like it would
 over a real cable — the JP comm library and battle engine are the US code
 shifted, and cross-version battles (both parent directions, plus the guest
 exchange) proved frame-exact in the `cross`/`crossr` selftests — the status
@@ -87,5 +90,5 @@ ordered byte stream through a per-turn SIO barrier (slot-ins ride in it).
 reliable+ordered data channel (`src/net.rs`), via a shared `Link`
 (`src/link.rs`) whose handshake-generation tags keep cancelled connects,
 rematches, and reconnects coherent. Emulation is audio-paced
-(`src/emu.rs` / `src/audio.rs`, SDL3); the window is egui.
+(`src/emu.rs` / `src/audio.rs`, SDL3); the window is iced, same as tango.
 Reverse-engineering provenance lives in the doc comments of `hooks.rs`.

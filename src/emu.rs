@@ -11,31 +11,48 @@ use crate::link::Link;
 pub const SCREEN_W: u32 = 240;
 pub const SCREEN_H: u32 = 160;
 
-/// A supported ROM: identified by full-file CRC32, hooked via its offsets
-/// table. The netplay hello exchanges CRCs but doesn't gate on them — US↔JP
-/// crossplay is allowed (see [`crate::net`]).
+/// A supported ROM: identified by the header's game code + revision, hooked
+/// via its offsets table. Header identification deliberately admits patched
+/// ROMs (romhacks keep the header); the netplay hello exchanges game codes
+/// but doesn't gate on them — US↔JP crossplay is allowed (see
+/// [`crate::net`]).
 pub struct Game {
-    pub crc32: u32,
+    /// Header game code (`0xAC..0xB0`) + revision (`0xBC`) this offsets
+    /// table was reverse-engineered against.
+    pub code: [u8; 4],
+    pub revision: u8,
     pub title: &'static str,
     pub offsets: &'static hooks::Offsets,
 }
 
 pub static GAMES: [Game; 2] = [
     Game {
-        crc32: 0x26be44fd,
+        code: *b"A89E",
+        revision: 0,
         title: "Mega Man Battle Chip Challenge (US)",
         offsets: &hooks::A89E_00,
     },
     Game {
-        crc32: 0x9217fb18,
+        code: *b"A89J",
+        revision: 0,
         title: "Rockman EXE Battle Chip GP (JP)",
         offsets: &hooks::A89J_00,
     },
 ];
 
 pub fn identify(rom: &[u8]) -> Option<&'static Game> {
-    let crc = crc32fast::hash(rom);
-    GAMES.iter().find(|game| game.crc32 == crc)
+    let code = rom.get(0xac..0xb0)?;
+    let revision = *rom.get(0xbc)?;
+    GAMES
+        .iter()
+        .find(|game| game.code.as_slice() == code && game.revision == revision)
+}
+
+/// The header game code as text, for error messages.
+pub fn header_code(rom: &[u8]) -> String {
+    rom.get(0xac..0xb0)
+        .map(|code| String::from_utf8_lossy(code).into_owned())
+        .unwrap_or_else(|| "????".to_owned())
 }
 
 /// For "unsupported ROM" error messages.
@@ -60,6 +77,7 @@ pub fn start(
     save_file: std::fs::File,
     game: &'static Game,
     link: Arc<Link>,
+    frame_notify: Arc<tokio::sync::Notify>,
 ) -> anyhow::Result<Emu> {
     let mut core = mgba::core::Core::new_gba(
         "bcclink",
@@ -85,6 +103,9 @@ pub fn start(
         move |_core, video_buffer, _thread_handle| {
             vbuf.lock().unwrap().copy_from_slice(video_buffer);
             dirty.store(true, Ordering::Release);
+            // Wake the UI's frame stream (permits coalesce, so a slow UI
+            // frame-skips rather than queueing).
+            frame_notify.notify_one();
         }
     });
     thread.start().map_err(|e| anyhow::anyhow!("mgba thread start: {e:?}"))?;

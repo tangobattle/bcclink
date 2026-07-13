@@ -73,9 +73,9 @@ fn shot(core: &mgba::core::Core, path: &str) {
 /// Harness-only: the keypad-read hook where the nav masher injects input —
 /// a ROM address, so it shifts per version like the hooked comm library.
 fn keypad_read(game: &emu::Game) -> u32 {
-    match game.crc32 {
-        0x9217fb18 => 0x08001ce2, // JP (A89J)
-        _ => 0x08001cee,          // US (A89E)
+    match &game.code {
+        b"A89J" => 0x08001ce2, // JP
+        _ => 0x08001cee,       // US (A89E)
     }
 }
 

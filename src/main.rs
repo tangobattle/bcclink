@@ -1,7 +1,7 @@
 //! bcclink — standalone netplay for Mega Man Battle Chip Challenge (US) and
 //! its JP original, Rockman EXE Battle Chip GP.
 //!
-//! An egui window over an mgba core, with SDL3 for audio + gamepads (the
+//! An iced window over an mgba core, with SDL3 for audio + gamepads (the
 //! same split Tango uses) and exactly one trick: the game's link-cable comm
 //! library is replaced by a WebRTC data channel paired through tango's
 //! matchmaking server (see [`bcclink::hooks`] / [`bcclink::link`] /
@@ -21,13 +21,53 @@ use std::sync::{Arc, Mutex};
 
 use bcclink::emu::{self, SCREEN_H, SCREEN_W};
 use bcclink::{audio, link, net};
-use eframe::egui;
+use iced::widget::{button, column, container, image, row, text, text_input};
+use iced::{Element, Length, Subscription, Task};
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MATCHMAKING_ENDPOINT: &str = "wss://matchmaking.tango.n1gp.net";
 
-const OK_COLOR: egui::Color32 = egui::Color32::from_rgb(0x40, 0xc0, 0x40);
-const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(0xd0, 0x60, 0x40);
+// Design tokens, matching tango's dark theme so the two apps feel related.
+const BG: iced::Color = iced::Color::from_rgb(0.055, 0.063, 0.067); // #0e1011
+const SURFACE: iced::Color = iced::Color::from_rgb(0.086, 0.098, 0.106); // #16191b
+const EDGE: iced::Color = iced::Color::from_rgb(0.149, 0.161, 0.173); // #26292c
+const TEXT: iced::Color = iced::Color::from_rgb(0.925, 0.933, 0.929); // #eceeed
+const ACCENT: iced::Color = iced::Color::from_rgb(0.298, 0.686, 0.314); // #4caf50
+const WARNING: iced::Color = iced::Color::from_rgb(1.0, 0.710, 0.278); // #ffb547
+const DANGER: iced::Color = iced::Color::from_rgb(1.0, 0.322, 0.322); // #ff5252
+const WEAK: iced::Color = iced::Color::from_rgb(0.604, 0.627, 0.651); // #9aa0a6
+
+const TEXT_TITLE: f32 = 22.0;
+const TEXT_BODY: f32 = 13.0;
+const TEXT_CAPTION: f32 = 11.0;
+
+fn theme(_app: &App) -> iced::Theme {
+    iced::Theme::custom(
+        "bcclink".to_owned(),
+        iced::theme::Palette {
+            background: BG,
+            text: TEXT,
+            primary: ACCENT,
+            success: ACCENT,
+            warning: WARNING,
+            danger: DANGER,
+        },
+    )
+}
+
+/// The setup card and the game screen's top bar share this raised-surface
+/// look.
+fn surface(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(SURFACE.into()),
+        border: iced::Border {
+            color: EDGE,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        ..Default::default()
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(default)]
@@ -73,22 +113,23 @@ impl Config {
     }
 }
 
-fn keyboard_mask(input: &egui::InputState) -> u32 {
-    const MAP: [(egui::Key, u32); 10] = [
-        (egui::Key::Z, 1 << 0),         // A
-        (egui::Key::X, 1 << 1),         // B
-        (egui::Key::Backspace, 1 << 2), // Select
-        (egui::Key::Enter, 1 << 3),     // Start
-        (egui::Key::ArrowRight, 1 << 4),
-        (egui::Key::ArrowLeft, 1 << 5),
-        (egui::Key::ArrowUp, 1 << 6),
-        (egui::Key::ArrowDown, 1 << 7),
-        (egui::Key::S, 1 << 8), // R
-        (egui::Key::A, 1 << 9), // L
-    ];
-    MAP.iter()
-        .filter(|(key, _)| input.key_down(*key))
-        .fold(0, |mask, (_, bit)| mask | bit)
+/// GBA joyflag bit for a physical key, or `None` if unbound. Physical
+/// codes (layout-independent), so the mapping stays put on non-QWERTY.
+fn key_bit(code: iced::keyboard::key::Code) -> Option<u32> {
+    use iced::keyboard::key::Code;
+    Some(match code {
+        Code::KeyZ => 1 << 0,         // A
+        Code::KeyX => 1 << 1,         // B
+        Code::Backspace => 1 << 2,    // Select
+        Code::Enter => 1 << 3,        // Start
+        Code::ArrowRight => 1 << 4,
+        Code::ArrowLeft => 1 << 5,
+        Code::ArrowUp => 1 << 6,
+        Code::ArrowDown => 1 << 7,
+        Code::KeyS => 1 << 8, // R
+        Code::KeyA => 1 << 9, // L
+        _ => return None,
+    })
 }
 
 fn gamepad_bit(button: sdl3::gamepad::Button) -> Option<u32> {
@@ -109,7 +150,7 @@ fn gamepad_bit(button: sdl3::gamepad::Button) -> Option<u32> {
 }
 
 /// SDL3, initialized main-thread-only for audio + gamepads (no video — the
-/// window is egui's).
+/// window is iced's).
 struct Sdl {
     sdl: sdl3::Sdl,
     gamepads: sdl3::GamepadSubsystem,
@@ -174,30 +215,55 @@ impl Sdl {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Message {
+    /// The emulator finished a frame (via the vblank notify stream): pump
+    /// gamepads, push held keys, refresh the screen texture.
+    Frame,
+    PickRom,
+    RomPicked(Option<PathBuf>),
+    PickSave,
+    SavePicked(Option<PathBuf>),
+    Play,
+    Stop,
+    LinkCodeChanged(String),
+    EndpointChanged(String),
+    EndpointReset,
+    ToggleAdvanced,
+    Connect,
+    Disconnect,
+    KeyDown(u32),
+    KeyUp(u32),
+    CloseRequested(iced::window::Id),
+}
+
 struct App {
     cfg: Config,
     rt: tokio::runtime::Runtime,
     sdl: Option<Sdl>,
     gamepad_mask: u32,
+    kb_mask: u32,
 
     link: Arc<link::Link>,
     emu: Option<emu::Emu>,
     _audio: Option<audio::Backend>,
     game: Option<&'static emu::Game>,
+    /// Woken by the emulator's frame callback; drives the [`Message::Frame`]
+    /// subscription stream. App-lifetime so the subscription identity is
+    /// stable across sessions.
+    frame_notify: Arc<tokio::sync::Notify>,
 
     status: Arc<Mutex<net::Status>>,
     cancel: Option<CancellationToken>,
 
-    screen: Option<egui::TextureHandle>,
+    screen: Option<image::Handle>,
     rgba: Vec<u8>,
     error: Option<String>,
-    /// One-shot: focus the link code field when the game screen appears, so
-    /// starting the game flows straight into typing the code.
-    link_code_focus: bool,
+    advanced: bool,
 }
 
 impl App {
-    fn new() -> anyhow::Result<Self> {
+    fn new() -> (Self, Task<Message>) {
         let sdl = match Sdl::init() {
             Ok(sdl) => Some(sdl),
             Err(e) => {
@@ -205,27 +271,31 @@ impl App {
                 None
             }
         };
-        Ok(Self {
+        let app = Self {
             cfg: Config::load(),
             rt: tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .build()?,
+                .build()
+                .expect("tokio runtime"),
             sdl,
             gamepad_mask: 0,
+            kb_mask: 0,
             link: Arc::new(link::Link::new()),
             emu: None,
             _audio: None,
             game: None,
+            frame_notify: Arc::new(tokio::sync::Notify::new()),
             status: Arc::new(Mutex::new(net::Status::Idle)),
             cancel: None,
             screen: None,
             rgba: vec![0u8; (SCREEN_W * SCREEN_H * 4) as usize],
             error: None,
-            link_code_focus: false,
-        })
+            advanced: false,
+        };
+        (app, Task::none())
     }
 
-    fn play(&mut self) {
+    fn play(&mut self) -> Task<Message> {
         self.error = None;
         let result = (|| -> anyhow::Result<()> {
             let rom_path = self
@@ -241,10 +311,10 @@ impl App {
             let rom = std::fs::read(&rom_path)?;
             let game = emu::identify(&rom).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "{} doesn't look like {}: crc32 {:08x}",
+                    "{} doesn't look like {}: game code {}",
                     rom_path.display(),
                     emu::supported_titles(),
-                    crc32fast::hash(&rom)
+                    emu::header_code(&rom)
                 )
             })?;
             let save_file = std::fs::OpenOptions::new()
@@ -252,7 +322,13 @@ impl App {
                 .write(true)
                 .create(true)
                 .open(&save_path)?;
-            let emu = emu::start(rom, save_file, game, self.link.clone())?;
+            let emu = emu::start(
+                rom,
+                save_file,
+                game,
+                self.link.clone(),
+                self.frame_notify.clone(),
+            )?;
             if let Some(sdl) = &self.sdl {
                 match audio::Backend::new(&sdl.sdl, emu.handle.clone()) {
                     Ok(backend) => self._audio = Some(backend),
@@ -270,9 +346,11 @@ impl App {
         if let Err(e) = result {
             self._audio = None;
             self.error = Some(e.to_string());
+            Task::none()
         } else {
-            self.link_code_focus = true;
             self.cfg.save();
+            // Starting the game flows straight into typing the link code.
+            iced::widget::operation::focus("link-code")
         }
     }
 
@@ -290,6 +368,9 @@ impl App {
 
     fn connect(&mut self) {
         let Some(game) = self.game else { return };
+        if self.cfg.link_code.trim().is_empty() {
+            return;
+        }
         self.disconnect();
         self.error = None;
         let cancel = CancellationToken::new();
@@ -298,7 +379,7 @@ impl App {
             net::ConnectParams {
                 endpoint: self.cfg.matchmaking_endpoint.clone(),
                 link_code: self.cfg.link_code.clone(),
-                rom_crc32: game.crc32,
+                game_code: game.code,
             },
             self.link.clone(),
             self.status.clone(),
@@ -318,8 +399,30 @@ impl App {
         }
     }
 
-    fn update_screen(&mut self, ctx: &egui::Context) {
+    /// True while a connect task is running and hasn't failed — the state
+    /// where the top bar shows Disconnect instead of Connect.
+    fn connecting(&self) -> bool {
+        self.cancel.is_some()
+            && !matches!(
+                *self.status.lock().unwrap(),
+                net::Status::Idle | net::Status::Lost(_)
+            )
+    }
+
+    fn on_frame(&mut self) {
+        let mut gamepad_mask = self.gamepad_mask;
+        if let Some(sdl) = &mut self.sdl {
+            sdl.pump_gamepads(&mut gamepad_mask);
+        }
+        self.gamepad_mask = gamepad_mask;
+
         let Some(emu) = &self.emu else { return };
+        emu.handle.set_keys(self.kb_mask | self.gamepad_mask);
+        if emu.handle.has_crashed() {
+            self.stop();
+            self.error = Some("emulator crashed".to_owned());
+            return;
+        }
         if !emu.dirty.swap(false, Ordering::Acquire) && self.screen.is_some() {
             return;
         }
@@ -333,292 +436,446 @@ impl App {
                 dst[3] = 0xff;
             }
         }
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [SCREEN_W as usize, SCREEN_H as usize],
-            &self.rgba,
-        );
-        match &mut self.screen {
-            Some(texture) => texture.set(image, egui::TextureOptions::NEAREST),
-            None => {
-                self.screen = Some(ctx.load_texture("screen", image, egui::TextureOptions::NEAREST))
-            }
-        }
+        self.screen = Some(image::Handle::from_rgba(
+            SCREEN_W,
+            SCREEN_H,
+            self.rgba.clone(),
+        ));
     }
 
-    /// The pre-game screen: pick files, start. Everything else lives on the
-    /// game screen's top bar.
-    fn setup_ui(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            ui.heading("bcclink");
-            ui.label("link play for Mega Man Battle Chip Challenge / Rockman EXE Battle Chip GP");
-            ui.add_space(16.0);
-
-            egui::Grid::new("setup")
-                .num_columns(2)
-                .spacing([8.0, 8.0])
-                .show(ui, |ui| {
-                    let file_button = |ui: &mut egui::Ui, path: &Option<PathBuf>, empty: &str| {
-                        let label = path
-                            .as_ref()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| empty.to_owned());
-                        ui.add(egui::Button::new(label).min_size(egui::vec2(240.0, 0.0)))
-                    };
-
-                    ui.label("ROM");
-                    if file_button(ui, &self.cfg.rom_path, "choose a ROM…")
-                        .on_hover_text("Battle Chip Challenge (US) or Battle Chip GP (JP)")
-                        .clicked()
-                    {
-                        self.pick_rom();
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Frame => {
+                self.on_frame();
+                Task::none()
+            }
+            Message::PickRom => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .add_filter("GBA ROM", &["gba"])
+                        .set_title("Battle Chip Challenge (US) / Battle Chip GP (JP) ROM")
+                        .pick_file()
+                        .await
+                        .map(|f| f.path().to_path_buf())
+                },
+                Message::RomPicked,
+            ),
+            Message::RomPicked(Some(path)) => {
+                // Validate right here so a wrong pick is flagged at the
+                // picker, not at Start.
+                match std::fs::read(&path) {
+                    Ok(rom) if emu::identify(&rom).is_some() => {
+                        // Default the save next to the ROM so the common
+                        // case is one click.
+                        if self.cfg.save_path.is_none() {
+                            self.cfg.save_path = Some(path.with_extension("sav"));
+                        }
+                        self.cfg.rom_path = Some(path);
+                        self.error = None;
                     }
-                    ui.end_row();
-
-                    ui.label("Save");
-                    if file_button(ui, &self.cfg.save_path, "choose a save…")
-                        .on_hover_text("created if it doesn't exist yet")
-                        .clicked()
-                    {
-                        if let Some(path) = rfd::FileDialog::new()
+                    Ok(_) => {
+                        self.error = Some(format!(
+                            "{} doesn't look like {}",
+                            path.display(),
+                            emu::supported_titles()
+                        ));
+                    }
+                    Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+                }
+                Task::none()
+            }
+            Message::PickSave => {
+                let file_name = self
+                    .cfg
+                    .save_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "bcc.sav".to_owned());
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
                             .add_filter("GBA save", &["sav"])
                             .set_title("Save file (created if missing)")
-                            .set_file_name(
-                                self.cfg
-                                    .save_path
-                                    .as_ref()
-                                    .and_then(|p| p.file_name())
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| "bcc.sav".to_owned()),
-                            )
+                            .set_file_name(file_name)
                             .pick_file()
-                        {
-                            self.cfg.save_path = Some(path);
-                        }
-                    }
-                    ui.end_row();
-                });
-
-            ui.add_space(12.0);
-            let can_play = self.cfg.rom_path.is_some() && self.cfg.save_path.is_some();
-            if ui
-                .add_enabled(
-                    can_play,
-                    egui::Button::new("▶  Start game").min_size(egui::vec2(160.0, 32.0)),
+                            .await
+                            .map(|f| f.path().to_path_buf())
+                    },
+                    Message::SavePicked,
                 )
-                .clicked()
-            {
-                self.play();
             }
-            if !can_play {
-                ui.add_space(4.0);
-                ui.weak("pick a ROM to begin — the save defaults to sit next to it");
+            Message::SavePicked(Some(path)) => {
+                self.cfg.save_path = Some(path);
+                Task::none()
             }
-
-            if let Some(error) = &self.error {
-                ui.add_space(8.0);
-                ui.colored_label(ERROR_COLOR, error);
+            Message::RomPicked(None) | Message::SavePicked(None) => Task::none(),
+            Message::Play => self.play(),
+            Message::Stop => {
+                self.stop();
+                Task::none()
             }
-
-            ui.add_space(24.0);
-            ui.collapsing("Advanced", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Matchmaking server:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.cfg.matchmaking_endpoint)
-                            .desired_width(280.0),
-                    );
-                    if ui.button("reset").clicked() {
-                        self.cfg.matchmaking_endpoint = DEFAULT_MATCHMAKING_ENDPOINT.to_owned();
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            ui.weak(
-                "Keys: arrows = D-pad, Z/X = A/B, A/S = L/R, Enter = Start, Backspace = Select",
-            );
-        });
-    }
-
-    fn pick_rom(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("GBA ROM", &["gba"])
-            .set_title("Battle Chip Challenge (US) / Battle Chip GP (JP) ROM")
-            .pick_file()
-        else {
-            return;
-        };
-        // Validate right here so a wrong pick is flagged at the picker, not
-        // at Start.
-        match std::fs::read(&path) {
-            Ok(rom) if emu::identify(&rom).is_some() => {
-                // Default the save next to the ROM so the common case is one
-                // click.
-                if self.cfg.save_path.is_none() {
-                    self.cfg.save_path = Some(path.with_extension("sav"));
+            Message::LinkCodeChanged(code) => {
+                self.cfg.link_code = code;
+                Task::none()
+            }
+            Message::EndpointChanged(endpoint) => {
+                self.cfg.matchmaking_endpoint = endpoint;
+                Task::none()
+            }
+            Message::EndpointReset => {
+                self.cfg.matchmaking_endpoint = DEFAULT_MATCHMAKING_ENDPOINT.to_owned();
+                Task::none()
+            }
+            Message::ToggleAdvanced => {
+                self.advanced = !self.advanced;
+                Task::none()
+            }
+            Message::Connect => {
+                if !self.connecting() {
+                    self.connect();
                 }
-                self.cfg.rom_path = Some(path);
-                self.error = None;
+                Task::none()
             }
-            Ok(_) => {
-                self.error = Some(format!(
-                    "{} doesn't look like {}",
-                    path.display(),
-                    emu::supported_titles()
-                ));
+            Message::Disconnect => {
+                self.disconnect();
+                Task::none()
             }
-            Err(e) => self.error = Some(format!("{}: {e}", path.display())),
+            Message::KeyDown(bit) => {
+                self.kb_mask |= bit;
+                Task::none()
+            }
+            Message::KeyUp(bit) => {
+                self.kb_mask &= !bit;
+                Task::none()
+            }
+            Message::CloseRequested(id) => {
+                self.disconnect();
+                self.stop();
+                self.cfg.save();
+                iced::window::close(id)
+            }
         }
     }
 
-    /// The game screen's top bar: link code, connection status, stop.
-    fn session_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Link code:");
-            let code_edit = ui.add(
-                egui::TextEdit::singleline(&mut self.cfg.link_code)
-                    .hint_text("make one up, share it")
-                    .desired_width(160.0),
-            );
-            if std::mem::take(&mut self.link_code_focus) {
-                code_edit.request_focus();
-            }
-            let status = self.status.lock().unwrap().clone();
-            let connecting = self.cancel.is_some()
-                && !matches!(status, net::Status::Idle | net::Status::Lost(_));
-            if connecting {
-                if ui.button("Disconnect").clicked() {
-                    self.disconnect();
-                }
+    fn subscription(&self) -> Subscription<Message> {
+        let mut subs = vec![
+            iced::event::listen_with(key_message),
+            iced::window::close_requests().map(Message::CloseRequested),
+        ];
+        if self.emu.is_some() {
+            subs.push(Subscription::run_with(
+                FrameTag {
+                    notify: self.frame_notify.clone(),
+                },
+                frame_stream,
+            ));
+        }
+        Subscription::batch(subs)
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        if self.emu.is_none() {
+            self.setup_view()
+        } else {
+            self.game_view()
+        }
+    }
+
+    /// The pre-game screen: a centered card — pick files, start. Everything
+    /// else lives on the game screen's top bar.
+    fn setup_view(&self) -> Element<'_, Message> {
+        let file_row = |label: &'static str, path: &Option<PathBuf>, empty: &str, msg: Message| {
+            let name = path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned());
+            let chosen = name.is_some();
+            row![
+                text(label).size(TEXT_CAPTION).color(WEAK).width(36),
+                button(
+                    text(name.unwrap_or_else(|| empty.to_owned()))
+                        .size(TEXT_BODY)
+                        .color(if chosen { TEXT } else { WEAK })
+                )
+                .style(button::secondary)
+                .padding([6, 12])
+                .width(Length::Fill)
+                .on_press(msg),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center)
+        };
+
+        let can_play = self.cfg.rom_path.is_some() && self.cfg.save_path.is_some();
+
+        let mut card = column![
+            text("bcclink").size(TEXT_TITLE),
+            text("link play for Battle Chip Challenge / Battle Chip GP")
+                .size(TEXT_CAPTION)
+                .color(WEAK),
+        ]
+        .spacing(4)
+        .align_x(iced::Alignment::Center);
+
+        card = card.push(iced::widget::space().height(12));
+        card = card.push(
+            column![
+                file_row("ROM", &self.cfg.rom_path, "choose a ROM…", Message::PickRom),
+                file_row("Save", &self.cfg.save_path, "choose a save…", Message::PickSave),
+            ]
+            .spacing(8)
+            .width(Length::Fill),
+        );
+        card = card.push(iced::widget::space().height(8));
+        card = card.push(
+            button(text("Start game").size(15.0).center().width(Length::Fill))
+                .padding([9, 12])
+                .width(Length::Fill)
+                .on_press_maybe(can_play.then_some(Message::Play)),
+        );
+        card = card.push(
+            if let Some(error) = &self.error {
+                text(error.clone()).size(TEXT_CAPTION).color(DANGER)
+            } else if !can_play {
+                text("pick a ROM to begin — the save defaults to sit next to it")
+                    .size(TEXT_CAPTION)
+                    .color(WEAK)
             } else {
-                let can_connect = !self.cfg.link_code.trim().is_empty();
-                let entered =
-                    code_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui
-                    .add_enabled(can_connect, egui::Button::new("Connect"))
-                    .clicked()
-                    || (can_connect && entered)
-                {
-                    self.connect();
-                }
+                text("").size(TEXT_CAPTION)
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⏹ Stop").on_hover_text("back to setup").clicked() {
-                    self.stop();
-                    return;
+            .center()
+            .width(Length::Fill),
+        );
+
+        card = card.push(iced::widget::space().height(4));
+        card = card.push(
+            button(
+                text(if self.advanced {
+                    "advanced ▾"
+                } else {
+                    "advanced ▸"
+                })
+                .size(TEXT_CAPTION)
+                .color(WEAK),
+            )
+            .style(button::text)
+            .padding(0)
+            .on_press(Message::ToggleAdvanced),
+        );
+        if self.advanced {
+            card = card.push(
+                row![
+                    text("matchmaking server").size(TEXT_CAPTION).color(WEAK),
+                    text_input(DEFAULT_MATCHMAKING_ENDPOINT, &self.cfg.matchmaking_endpoint)
+                        .size(TEXT_CAPTION)
+                        .padding([5, 8])
+                        .on_input(Message::EndpointChanged)
+                        .width(Length::Fill),
+                    button(text("reset").size(TEXT_CAPTION))
+                        .style(button::secondary)
+                        .padding([5, 10])
+                        .on_press(Message::EndpointReset),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+
+        let footer = text("arrows = D-pad · Z/X = A/B · A/S = L/R · Enter = Start · Backspace = Select")
+            .size(TEXT_CAPTION)
+            .color(WEAK);
+
+        container(
+            column![
+                container(card.width(360)).padding(24).style(surface),
+                footer,
+            ]
+            .spacing(12)
+            .align_x(iced::Alignment::Center),
+        )
+        .center(Length::Fill)
+        .into()
+    }
+
+    /// The game screen: top bar (link code, connection status, stop) over
+    /// the integer-scaled screen on black.
+    fn game_view(&self) -> Element<'_, Message> {
+        let status = self.status.lock().unwrap().clone();
+        let connecting = self.connecting();
+
+        let mut bar = row![].spacing(10).align_y(iced::Alignment::Center);
+        bar = bar.push(text("link code").size(TEXT_CAPTION).color(WEAK));
+        {
+            let mut code_edit = text_input("make one up, share it", &self.cfg.link_code)
+                .id("link-code")
+                .size(TEXT_BODY)
+                .padding([5, 8])
+                .on_input(Message::LinkCodeChanged)
+                .width(150);
+            if !connecting {
+                code_edit = code_edit.on_submit(Message::Connect);
+            }
+            bar = bar.push(code_edit);
+        }
+        if connecting {
+            bar = bar.push(
+                button(text("Disconnect").size(TEXT_BODY))
+                    .style(button::secondary)
+                    .padding([5, 12])
+                    .on_press(Message::Disconnect),
+            );
+        } else {
+            let can_connect = !self.cfg.link_code.trim().is_empty();
+            bar = bar.push(
+                button(text("Connect").size(TEXT_BODY))
+                    .padding([5, 12])
+                    .on_press_maybe(can_connect.then_some(Message::Connect)),
+            );
+        }
+        let (dot, line, color) = match status {
+            net::Status::Idle => (
+                "○",
+                "enter a shared code, then Connect".to_owned(),
+                WEAK,
+            ),
+            net::Status::Signaling => ("◌", "contacting server…".to_owned(), WARNING),
+            net::Status::WaitingForPeer => ("◌", "waiting for opponent…".to_owned(), WARNING),
+            net::Status::Connected {
+                side,
+                cross_version,
+            } => (
+                "●",
+                format!(
+                    "linked{} — you are P{} — PET → Transmit in-game",
+                    if cross_version { " US↔JP" } else { "" },
+                    side + 1
+                ),
+                ACCENT,
+            ),
+            net::Status::Lost(reason) => ("●", reason, DANGER),
+        };
+        bar = bar.push(
+            row![
+                text(dot).size(TEXT_CAPTION).color(color),
+                text(line).size(TEXT_CAPTION).color(color),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+        );
+        bar = bar.push(iced::widget::space().width(Length::Fill));
+        bar = bar.push(
+            button(text("Stop").size(TEXT_BODY))
+                .style(button::danger)
+                .padding([5, 12])
+                .on_press(Message::Stop),
+        );
+
+        let screen: Element<'_, Message> = if let Some(handle) = &self.screen {
+            let handle = handle.clone();
+            iced::widget::responsive(move |size| {
+                let scale = (size.width / SCREEN_W as f32)
+                    .min(size.height / SCREEN_H as f32)
+                    .floor()
+                    .max(1.0);
+                container(
+                    image(handle.clone())
+                        .filter_method(image::FilterMethod::Nearest)
+                        .width(SCREEN_W as f32 * scale)
+                        .height(SCREEN_H as f32 * scale),
+                )
+                .center(Length::Fill)
+                .into()
+            })
+            .into()
+        } else {
+            iced::widget::space().into()
+        };
+
+        column![
+            container(bar).padding([8, 12]).width(Length::Fill).style(
+                |_: &iced::Theme| container::Style {
+                    background: Some(SURFACE.into()),
+                    ..Default::default()
                 }
-                ui.separator();
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| match status {
-                        net::Status::Idle => {
-                            ui.weak("enter the code you agreed with your opponent, then Connect");
-                        }
-                        net::Status::Signaling => {
-                            ui.spinner();
-                            ui.weak("contacting matchmaking server…");
-                        }
-                        net::Status::WaitingForPeer => {
-                            ui.spinner();
-                            ui.weak("waiting for your opponent to enter the same code…");
-                        }
-                        net::Status::Connected {
-                            side,
-                            cross_version,
-                        } => {
-                            ui.colored_label(
-                                OK_COLOR,
-                                format!(
-                                    "linked{} — you are {} — go to PET -> Transmit in-game",
-                                    if cross_version { " (US↔JP)" } else { "" },
-                                    if side == 0 { "P1" } else { "P2" }
-                                ),
-                            );
-                        }
-                        net::Status::Lost(reason) => {
-                            ui.colored_label(ERROR_COLOR, reason);
-                        }
-                    },
-                );
-            });
-        });
+            ),
+            container(screen)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(iced::Color::BLACK.into()),
+                    ..Default::default()
+                }),
+        ]
+        .into()
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut gamepad_mask = self.gamepad_mask;
-        if let Some(sdl) = &mut self.sdl {
-            sdl.pump_gamepads(&mut gamepad_mask);
-        }
-        self.gamepad_mask = gamepad_mask;
+/// Stable subscription identity for the frame stream; the `notify` payload
+/// carries the wake handle through to [`frame_stream`].
+struct FrameTag {
+    notify: Arc<tokio::sync::Notify>,
+}
 
-        // Keys go to the game unless egui wants them (a focused text field).
-        let kb_mask = if ctx.wants_keyboard_input() {
-            0
-        } else {
-            ctx.input(keyboard_mask)
-        };
-        if let Some(emu) = &self.emu {
-            emu.handle.set_keys(kb_mask | self.gamepad_mask);
-            if emu.handle.has_crashed() {
-                self.stop();
-                self.error = Some("emulator crashed".to_owned());
-            }
-        }
-
-        self.update_screen(ctx);
-
-        if self.emu.is_none() {
-            egui::CentralPanel::default().show(ctx, |ui| self.setup_ui(ui));
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-            return;
-        }
-
-        egui::TopBottomPanel::top("session").show(ctx, |ui| {
-            ui.add_space(4.0);
-            self.session_ui(ui);
-            ui.add_space(4.0);
-        });
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(egui::Color32::BLACK))
-            .show(ctx, |ui| {
-                if let Some(texture) = &self.screen {
-                    let avail = ui.available_size();
-                    let scale = (avail.x / SCREEN_W as f32)
-                        .min(avail.y / SCREEN_H as f32)
-                        .floor()
-                        .max(1.0);
-                    let size = egui::vec2(SCREEN_W as f32 * scale, SCREEN_H as f32 * scale);
-                    ui.add_space(((avail.y - size.y) / 2.0).max(0.0));
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.image((texture.id(), size));
-                    });
-                }
-            });
-
-        // The emulator produces frames continuously; repaint at display rate
-        // to show them.
-        ctx.request_repaint();
+impl std::hash::Hash for FrameTag {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        "emu-frame".hash(h);
     }
+}
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.disconnect();
-        self.cfg.save();
+fn frame_stream(tag: &FrameTag) -> impl futures::Stream<Item = Message> {
+    futures::stream::unfold(tag.notify.clone(), |notify| async move {
+        notify.notified().await;
+        Some((Message::Frame, notify))
+    })
+}
+
+/// Keyboard → game-input events. Presses only count when no widget captured
+/// them (typing a link code must not press game buttons); releases always
+/// count, so a key can't stick if focus moves mid-hold.
+fn key_message(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::key::Physical;
+    use iced::keyboard::Event as KeyEvent;
+    match event {
+        iced::Event::Keyboard(KeyEvent::KeyPressed {
+            physical_key: Physical::Code(code),
+            ..
+        }) if status == iced::event::Status::Ignored => key_bit(code).map(Message::KeyDown),
+        iced::Event::Keyboard(KeyEvent::KeyReleased {
+            physical_key: Physical::Code(code),
+            ..
+        }) => key_bit(code).map(Message::KeyUp),
+        _ => None,
     }
 }
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let app = App::new()?;
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("bcclink")
-            .with_inner_size([SCREEN_W as f32 * 3.0 + 16.0, SCREEN_H as f32 * 3.0 + 110.0]),
-        ..Default::default()
-    };
-    eframe::run_native("bcclink", options, Box::new(move |_cc| Ok(Box::new(app))))
-        .map_err(|e| anyhow::anyhow!("eframe: {e}"))
+    iced::application(App::new, App::update, App::view)
+        // vsync off, same as tango: the emulator paces frames off audio;
+        // an Immediate present keeps input→photon latency minimal.
+        .settings(iced::Settings {
+            vsync: false,
+            default_text_size: iced::Pixels(TEXT_BODY),
+            ..iced::Settings::default()
+        })
+        .title("bcclink")
+        .theme(theme)
+        .subscription(App::subscription)
+        .window(iced::window::Settings {
+            size: iced::Size::new(
+                SCREEN_W as f32 * 3.0 + 16.0,
+                SCREEN_H as f32 * 3.0 + 110.0,
+            ),
+            // Close goes through Message::CloseRequested so the config gets
+            // saved and the session torn down in order.
+            exit_on_close_request: false,
+            ..Default::default()
+        })
+        .run()
+        .map_err(|e| anyhow::anyhow!("iced: {e}"))
 }

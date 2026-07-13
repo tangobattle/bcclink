@@ -48,7 +48,7 @@ fn main() {
             net::ConnectParams {
                 endpoint: endpoint.clone(),
                 link_code: code.clone(),
-                rom_crc32: 0x26be44fd,
+                game_code: *b"A89E",
             },
             links[i].clone(),
             statuses[i].clone(),
