@@ -2575,7 +2575,7 @@ dependencies = [
 [[package]]
 name = "mgba"
 version = "4.0.32"
-source = "git+https://github.com/tangobattle/tango#239dd820ed9fbed7d04d43bd3be7a194ddcbf352"
+source = "git+https://github.com/tangobattle/mgba-rs#fcb01699c99b8a11331c354ab04f5e70ea75feb6"
 dependencies = [
  "log",
  "mgba-sys",
@@ -2586,7 +2586,7 @@ dependencies = [
 [[package]]
 name = "mgba-sys"
 version = "0.1.0"
-source = "git+https://github.com/tangobattle/tango#239dd820ed9fbed7d04d43bd3be7a194ddcbf352"
+source = "git+https://github.com/tangobattle/mgba-rs#fcb01699c99b8a11331c354ab04f5e70ea75feb6"
 dependencies = [
  "bindgen",
  "cmake",
@@ -4439,7 +4439,7 @@ dependencies = [
 [[package]]
 name = "tango-rtc"
 version = "0.1.0"
-source = "git+https://github.com/tangobattle/tango#239dd820ed9fbed7d04d43bd3be7a194ddcbf352"
+source = "git+https://github.com/tangobattle/tango-rtc#8a856fa68c164cf270435b23d64ad80e497938ac"
 dependencies = [
  "futures",
  "if-addrs",
@@ -4454,7 +4454,7 @@ dependencies = [
 [[package]]
 name = "tango-signaling"
 version = "0.1.0"
-source = "git+https://github.com/tangobattle/tango#239dd820ed9fbed7d04d43bd3be7a194ddcbf352"
+source = "git+https://github.com/tangobattle/tango-signaling#9c495a2e948ccec3071ebdd5fefbd68f9a8e64dd"
 dependencies = [
  "futures",
  "futures-util",

@@ -62,11 +62,12 @@ persist across runs.
 
 ## Building
 
-`cargo build --release`. The emulator (`mgba`) and transport
-(`tango-rtc` / `tango-signaling`) crates are git dependencies on
-[tangobattle/tango](https://github.com/tangobattle/tango), pinned by
-`Cargo.lock`; SDL3 builds from source. On Windows you need CMake, LLVM
-(`LIBCLANG_PATH`), and an MSVC toolchain.
+`cargo build --release`. The emulator and transport crates are git
+dependencies on [tangobattle/mgba-rs](https://github.com/tangobattle/mgba-rs),
+[tangobattle/tango-rtc](https://github.com/tangobattle/tango-rtc), and
+[tangobattle/tango-signaling](https://github.com/tangobattle/tango-signaling),
+pinned by `Cargo.lock`; SDL3 builds from source. On Windows you need CMake,
+LLVM (`LIBCLANG_PATH`), and an MSVC toolchain.
 
 ## How it works
 

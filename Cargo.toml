@@ -7,12 +7,12 @@ publish = false
 
 [workspace]
 
-# The emulator and transport crates come from the tango repo; Cargo.lock pins
-# the exact rev.
+# The emulator and transport crates come from their own repos (extracted
+# from tango); Cargo.lock pins the exact revs.
 [dependencies]
-mgba = { git = "https://github.com/tangobattle/tango" }
-tango-rtc = { git = "https://github.com/tangobattle/tango" }
-tango-signaling = { git = "https://github.com/tangobattle/tango" }
+mgba = { git = "https://github.com/tangobattle/mgba-rs" }
+tango-rtc = { git = "https://github.com/tangobattle/tango-rtc" }
+tango-signaling = { git = "https://github.com/tangobattle/tango-signaling" }
 sdl3 = { version = "0.18", default-features = false, features = ["build-from-source-static"] }
 eframe = "0.31"
 rfd = "0.14"
